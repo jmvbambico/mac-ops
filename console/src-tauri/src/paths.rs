@@ -11,6 +11,7 @@
 //! `jobs_dir`/`logs_dir`/`state_file`/`run_log`/`db_file`, and the tool root
 //! for `run_job_path`.
 use anyhow::{bail, Context, Result};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
 /// A directory is the tool root when it contains the two things the runner
@@ -151,8 +152,8 @@ pub fn config_path() -> Result<PathBuf> {
 }
 
 /// Lexically normalise `.`/`..`/repeated separators without touching the
-/// filesystem. Used only as the last-resort comparison form, when a path has
-/// no existing ancestor to canonicalise.
+/// filesystem. Used before the identity walk so a missing component cannot
+/// hide the real ancestor (see `targets_tool_root`).
 fn lexical_normalize(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
@@ -167,26 +168,53 @@ fn lexical_normalize(path: &Path) -> PathBuf {
     out
 }
 
-/// A canonical form usable even when the directory does not exist yet: resolve
-/// symlinks in the deepest existing ancestor, then re-attach the missing tail.
-/// Comparing a symlink with its target must never be a string comparison.
-fn comparable_path(path: &Path) -> PathBuf {
-    let mut existing = path;
-    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+/// The filesystem identity of an existing path: device + inode. Unlike a
+/// canonical path string this is unaffected by case spelling (APFS is
+/// case-insensitive but case-preserving), symlinks, or hard links — every
+/// spelling that reaches the same directory yields the same pair.
+fn file_identity(path: &Path) -> std::io::Result<(u64, u64)> {
+    let meta = std::fs::metadata(path)?;
+    Ok((meta.dev(), meta.ino()))
+}
+
+/// True when `requested` is the tool root itself or lies strictly inside it,
+/// judged by filesystem identity rather than by comparing path strings.
+///
+/// `requested` may not exist yet, so walk up to its deepest existing ancestor
+/// and compare every level. An existing path equal to the tool root is the
+/// documented in-place checkout and is allowed; a strict ancestor equal to the
+/// tool root means the target lives inside the tool tree and is rejected.
+///
+/// Both the lexically normalised and the raw spelling are checked. The
+/// normalised form catches `tool/missing/../user-data` (which resolves inside
+/// the tool); the raw form catches `tool/missing/../../outside`, where
+/// `create_dir_all` would first create `tool/missing` even though the final
+/// target is outside. TOCTOU between this check and `ensure_dirs` is accepted:
+/// this is a single-user settings write, not a privilege boundary.
+fn targets_tool_root(requested: &Path, tool_root: &Path) -> Result<bool> {
+    let tool = file_identity(tool_root)
+        .with_context(|| format!("inspect the tool root {}", tool_root.display()))?;
+    Ok(inside_tool_tree(&lexical_normalize(requested), tool) || inside_tool_tree(requested, tool))
+}
+
+/// Walk `path` and its ancestors, comparing each existing level against the
+/// tool root's identity. Reaching the tool root as the requested path itself
+/// (an in-place checkout) is fine; reaching it as an ancestor is not.
+fn inside_tool_tree(path: &Path, tool: (u64, u64)) -> bool {
+    let mut current = path;
+    let mut is_requested = true;
     loop {
-        if let Ok(canonical) = existing.canonicalize() {
-            let mut out = canonical;
-            for part in tail.iter().rev() {
-                out.push(part);
+        if let Ok(identity) = file_identity(current) {
+            if identity == tool {
+                return !is_requested;
             }
-            return lexical_normalize(&out);
         }
-        match (existing.parent(), existing.file_name()) {
-            (Some(parent), Some(name)) if !parent.as_os_str().is_empty() => {
-                tail.push(name.to_os_string());
-                existing = parent;
+        match current.parent() {
+            Some(parent) => {
+                is_requested = false;
+                current = parent;
             }
-            _ => return lexical_normalize(path),
+            None => return false,
         }
     }
 }
@@ -208,6 +236,12 @@ fn read_config_object(path: &Path) -> serde_json::Map<String, serde_json::Value>
 
 /// Write via a temp file in the SAME directory and rename: an interrupted write
 /// can leave a stray temp file, never a truncated `config.json`.
+///
+/// The temp file is created with `create_new` (never truncating or following a
+/// symlink at the chosen name) and the parent directory is fsynced after the
+/// rename so the new directory entry is durable too — without that, a power
+/// loss can lose a config the command reported as saved. That matters here
+/// because this file tells the 02:00 run where the user's automations live.
 fn write_atomic(path: &Path, contents: &str) -> Result<()> {
     use std::io::Write;
 
@@ -216,25 +250,60 @@ fn write_atomic(path: &Path, contents: &str) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("{} has no parent directory", path.display()))?;
     std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
 
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
     let name = path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("config.json");
-    let tmp = dir.join(format!(".{name}.{}.{nanos}.tmp", std::process::id()));
+
+    // A predictable name is a symlink target for an attacker; `create_new`
+    // fails rather than following one. The pid + nanosecond + attempt
+    // components make a collision implausible, and AlreadyExists retries.
+    let (tmp, mut file) = {
+        let mut created = None;
+        for attempt in 0..16u32 {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let candidate = dir.join(format!(
+                ".{name}.{}.{nanos}.{attempt}.tmp",
+                std::process::id()
+            ));
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&candidate)
+            {
+                Ok(file) => {
+                    created = Some((candidate, file));
+                    break;
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(err) => {
+                    return Err(err).with_context(|| format!("create {}", candidate.display()));
+                }
+            }
+        }
+        created.ok_or_else(|| {
+            anyhow::anyhow!(
+                "could not create a unique temp file next to {}",
+                path.display()
+            )
+        })?
+    };
 
     let result = (|| -> Result<()> {
-        let mut file = std::fs::File::create(&tmp)
-            .with_context(|| format!("create {}", tmp.display()))?;
         file.write_all(contents.as_bytes())
             .with_context(|| format!("write {}", tmp.display()))?;
         file.sync_all()
             .with_context(|| format!("flush {}", tmp.display()))?;
         std::fs::rename(&tmp, path)
             .with_context(|| format!("rename {} to {}", tmp.display(), path.display()))?;
+        let dir_file = std::fs::File::open(dir)
+            .with_context(|| format!("open directory {}", dir.display()))?;
+        dir_file
+            .sync_all()
+            .with_context(|| format!("flush directory {}", dir.display()))?;
         Ok(())
     })();
 
@@ -253,11 +322,14 @@ fn write_atomic(path: &Path, contents: &str) -> Result<()> {
 ///   * an existing path must be a directory — a missing one is created with
 ///     `jobs/`, `logs/` and `state/` by `ensure_dirs`.
 ///
-/// The tool-root comparison is canonicalised. An in-place git checkout, where
-/// the automations root IS the tool root, is a documented supported layout, so
-/// it is accepted. A directory strictly INSIDE the tool root is rejected:
-/// that would scatter the user's data through the installed code, which is
-/// exactly what Principle II forbids and is not the supported in-place case.
+/// The tool-root comparison uses filesystem identity (device + inode), not
+/// canonical path strings: APFS is case-insensitive but case-preserving, and a
+/// symlink can reach the same tree under a different spelling. An in-place git
+/// checkout, where the automations root IS the tool root, is a documented
+/// supported layout, so it is accepted. A directory strictly INSIDE the tool
+/// root is rejected: that would scatter the user's data through the installed
+/// code, which is exactly what Principle II forbids and is not the supported
+/// in-place case.
 pub fn set_config_root(config_file: &Path, tool_root: &Path, raw: &str) -> Result<PathBuf> {
     let trimmed = trim_like_bash_config(raw);
     if trimmed.is_empty() {
@@ -272,9 +344,7 @@ pub fn set_config_root(config_file: &Path, tool_root: &Path, raw: &str) -> Resul
         bail!("{} exists but is not a directory", requested.display());
     }
 
-    let target = comparable_path(requested);
-    let tool = comparable_path(tool_root);
-    if target != tool && target.starts_with(&tool) {
+    if targets_tool_root(requested, tool_root)? {
         bail!(
             "{} is inside the MacOps tool directory ({}); choose a directory outside the installed code",
             requested.display(),
@@ -1017,6 +1087,92 @@ mod tests {
             .to_string();
         assert!(err.contains("inside the MacOps tool directory"), "{err}");
         assert!(!inside.exists(), "nothing may be created under the tool root");
+        assert!(!cfg.exists());
+    }
+
+    /// Regression: macOS APFS is case-insensitive but case-preserving, so
+    /// `<tool>` and `<TOOL>` are the SAME directory, while `realpath` keeps the
+    /// spelling it was given and `Path::starts_with` compares case-sensitively.
+    /// The old string guard let this through and wrote jobs/logs/state into the
+    /// installed tool root.
+    ///
+    /// On a case-sensitive volume the differently-cased path is genuinely a
+    /// different directory, so there is nothing to assert; skip rather than
+    /// pass for the wrong reason.
+    #[test]
+    fn set_config_root_rejects_inside_the_tool_root_through_a_different_case() {
+        let base = Tmp::new("set-case-tool");
+        let home = base.path().join("home");
+        let tool = base.path().join("mops");
+        make_tool_root(&tool);
+        let cfg = home.join(".config/mops/config.json");
+
+        let differently_cased = base.path().join("MOPS");
+        if file_identity(&differently_cased).ok() != file_identity(&tool).ok() {
+            eprintln!(
+                "skipping: {} is case-sensitive, so MOPS is a different directory",
+                base.path().display()
+            );
+            return;
+        }
+
+        let inside = differently_cased.join("user-data");
+        let err = set_config_root(&cfg, &tool, inside.to_str().unwrap())
+            .expect_err("a differently-cased spelling of the tool root must be rejected")
+            .to_string();
+        assert!(err.contains("inside the MacOps tool directory"), "{err}");
+        assert!(
+            !tool.join("user-data").exists(),
+            "nothing may be created under the tool root"
+        );
+        assert!(!cfg.exists());
+    }
+
+    /// A symlink reaches the same inode under an unrelated string prefix;
+    /// identity catches that even though the spelling is completely different.
+    #[test]
+    fn set_config_root_rejects_inside_the_tool_root_through_a_symlink() {
+        let base = Tmp::new("set-symlink-tool");
+        let home = base.path().join("home");
+        let tool = base.path().join("tool");
+        make_tool_root(&tool);
+        let link = base.path().join("tool-link");
+        std::os::unix::fs::symlink(&tool, &link).unwrap();
+        let cfg = home.join(".config/mops/config.json");
+
+        let inside = link.join("user-data");
+        let err = set_config_root(&cfg, &tool, inside.to_str().unwrap())
+            .expect_err("a symlinked spelling of the tool root must be rejected")
+            .to_string();
+        assert!(err.contains("inside the MacOps tool directory"), "{err}");
+        assert!(
+            !tool.join("user-data").exists(),
+            "nothing may be created under the tool root"
+        );
+        assert!(!cfg.exists());
+    }
+
+    /// `..` must not be usable to hide the tool root. Here the final target is
+    /// outside the tool, but creating it would first create a directory inside
+    /// the tool; reject before anything exists.
+    #[test]
+    fn set_config_root_rejects_a_dotdot_path_through_the_tool_root() {
+        let base = Tmp::new("set-dotdot-tool");
+        let home = base.path().join("home");
+        let tool = base.path().join("tool");
+        make_tool_root(&tool);
+        let cfg = home.join(".config/mops/config.json");
+
+        let requested = tool.join("missing/../../outside");
+        let err = set_config_root(&cfg, &tool, requested.to_str().unwrap())
+            .expect_err("a .. traversal through the tool root must be rejected")
+            .to_string();
+        assert!(err.contains("inside the MacOps tool directory"), "{err}");
+        assert!(
+            !tool.join("missing").exists(),
+            "nothing may be created under the tool root"
+        );
+        assert!(!base.path().join("outside").exists());
         assert!(!cfg.exists());
     }
 
