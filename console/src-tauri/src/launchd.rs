@@ -220,7 +220,7 @@ pub fn plist_xml(
     let auto_s = automations_root.to_str().ok_or_else(|| {
         anyhow::anyhow!("automations root is not valid UTF-8: {}", automations_root.display())
     })?;
-    // The plist names <root>/jobs/<file>, so the filename must be a plain
+    // The plist names <automations-root>/jobs/<file>, so the filename must be a plain
     // basename: no traversal, no absolute path, nothing to escape jobs/.
     let base = job_file.rsplit('/').next().unwrap_or(job_file);
     if base.is_empty() || job_file.contains("..") || job_file.starts_with('/') {
