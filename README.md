@@ -49,10 +49,10 @@ same:
 
 Resolution, first hit wins:
 
-- **Tool root:** `$MACHINE_OPS_TOOL_ROOT`, otherwise upward from the running
+- **Tool root:** `$MOPS_TOOL_ROOT`, otherwise upward from the running
   executable and then the current directory (looking for `bin/run` and
   `lib/common.sh`).
-- **Automations root:** `$MACHINE_OPS_AUTOMATIONS_ROOT`, otherwise
+- **Automations root:** `$MOPS_AUTOMATIONS_ROOT`, otherwise
   `automations_root` in `~/.config/mops/config.json`, otherwise `~/.mops`.
 
 `~/.config/mops/config.json` looks like:
@@ -63,13 +63,34 @@ Resolution, first hit wins:
 
 A missing config file is normal; a malformed one falls through to `~/.mops`
 so maintenance keeps running. `bin/run` and `bin/run-job` export
-`MACHINE_OPS_TOOL_ROOT`, which is how a job finds `lib/common.sh` even when
+`MOPS_TOOL_ROOT`, which is how a job finds `lib/common.sh` even when
 its own directory is the automations root.
 
 The two roots may legitimately be the **same** directory — a git checkout used
 in place, with `jobs/` alongside `bin/`. Point
-`MACHINE_OPS_AUTOMATIONS_ROOT` at that checkout and everything keeps working;
+`MOPS_AUTOMATIONS_ROOT` at that checkout and everything keeps working;
 nothing writes user data into the tool directory just because they coincide.
+
+### Environment variables
+
+Canonical names:
+
+| Variable | Meaning |
+|---|---|
+| `MOPS_TOOL_ROOT` | the installed code (`bin/`, `lib/`) |
+| `MOPS_AUTOMATIONS_ROOT` | your `jobs/`, `logs/` and `state/` |
+| `MOPS_LOG` | the run log path |
+| `MOPS_DRY_RUN` | `1` previews; `0` applies |
+| `MOPS_RUNS` | where structured run records are appended |
+| `MOPS_RUN_STDOUT_CAP` | cap on captured stdout recorded per run |
+
+**Deprecated:** the old `MACHINE_OPS_*` names still work and will be **removed
+in 0.4.0**. During the transition `bin/run` and `bin/run-job` export BOTH names
+with identical values, so a job that reads the legacy name behaves exactly as
+it did. Reads prefer `MOPS_*` when both are set. The alias exists for the
+owner's own automations, which live in a separate repository this rename
+cannot reach — not for third-party users. When those automations have
+migrated, the legacy names go.
 
 `install.sh` resolves the automations root when it renders the LaunchAgent and
 pins it in the plist, so launchd and `bin/run` always agree.
@@ -86,11 +107,11 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # The tool root is exported by bin/run/bin/run-job; the fallback supports a
 # checkout used in place (jobs/ beside lib/).
-MACOPS_LIB="${MACHINE_OPS_TOOL_ROOT:-$SCRIPT_DIR/..}/lib"
+MACOPS_LIB="${MOPS_TOOL_ROOT:-${MACHINE_OPS_TOOL_ROOT:-$SCRIPT_DIR/..}}/lib"
 source "$MACOPS_LIB/common.sh"
 LABEL="my-thing"
 
-# ... do the work, honouring MACHINE_OPS_DRY_RUN=1 ...
+# ... do the work, honouring MOPS_DRY_RUN=1 ...
 
 log_line "[$LABEL] summary always goes to the log"
 alert "only on change, regression or error"   # omit and the run stays silent

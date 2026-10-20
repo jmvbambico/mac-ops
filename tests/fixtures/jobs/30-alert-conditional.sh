@@ -14,11 +14,11 @@
 
 set -u
 
-TOOL_ROOT="${MACHINE_OPS_TOOL_ROOT:?MACHINE_OPS_TOOL_ROOT must point at the checkout under test}"
+TOOL_ROOT="${MOPS_TOOL_ROOT:-${MACHINE_OPS_TOOL_ROOT:?MOPS_TOOL_ROOT must point at the checkout under test}}"
 # shellcheck disable=SC1091 # tool root is resolved at runtime, not at parse time
 source "$TOOL_ROOT/lib/common.sh"
 
-AUTOMATIONS_ROOT="${MACHINE_OPS_AUTOMATIONS_ROOT:-.}"
+AUTOMATIONS_ROOT="${MOPS_AUTOMATIONS_ROOT:-${MACHINE_OPS_AUTOMATIONS_ROOT:-.}}"
 MARKER="$AUTOMATIONS_ROOT/state/fixture-alert-marker"
 
 if [[ -f "$MARKER" ]]; then

@@ -27,7 +27,11 @@
 # channel, not the exit code. Non-zero only when the dispatcher itself is
 # broken (bad arguments, missing jobs dir, unwritable log).
 #
-# With --dry-run, jobs are told via MACHINE_OPS_DRY_RUN=1 to preview only.
+# With --dry-run, jobs are told via MOPS_DRY_RUN=1 to preview only. The
+# legacy MACHINE_OPS_DRY_RUN is exported with the SAME value for the
+# deprecation window: jobs in the owner's separate automations repo still read
+# it, and a job that sees it unset would fall through `:-0` and RUN IN APPLY
+# MODE. Both names stay until 0.4.0.
 #
 # Never run under sudo: mole refuses to run as root, so this dispatcher and
 # every job must run as the user, with no sudo and no password handling.
@@ -45,6 +49,8 @@ usage() {
 # the user's data directory and is resolved separately below; they may be the
 # same directory (a checkout used in place) but must never be conflated.
 TOOL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export MOPS_TOOL_ROOT="$TOOL_ROOT"
+# Legacy alias, exported with the same value until 0.4.0 (see header).
 export MACHINE_OPS_TOOL_ROOT="$TOOL_ROOT"
 
 # Per-job wall-clock timeout. Observed baselines: optimize ~20s, clean ~52s
@@ -65,14 +71,20 @@ if ! AUTOMATIONS_ROOT="$(machine_ops_automations_root)"; then
     printf 'bin/run: cannot resolve the automations root\n' >&2
     exit 1
 fi
+export MOPS_AUTOMATIONS_ROOT="$AUTOMATIONS_ROOT"
+# Legacy alias, same value until 0.4.0 (see header).
 export MACHINE_OPS_AUTOMATIONS_ROOT="$AUTOMATIONS_ROOT"
 JOBS_DIR="$AUTOMATIONS_ROOT/jobs"
 LOG_DIR="$AUTOMATIONS_ROOT/logs"
 LOG_FILE="$LOG_DIR/machine-ops.log"
+export MOPS_LOG="$LOG_FILE"
 export MACHINE_OPS_LOG="$LOG_FILE"
 
 TIER="daily"
 DRY_RUN="0"
+# Deprecation notes are log-only and at most one per run (Principle I keeps
+# stdout silent; forty jobs must not produce forty notices).
+LEGACY_DRY_NOTED=0
 
 for arg in "$@"; do
     case "$arg" in
@@ -94,6 +106,10 @@ for arg in "$@"; do
     esac
 done
 
+# BOTH names, identical value, every run. Dropping the legacy export here is
+# the silent-apply-mode hazard: the owner's jobs read MACHINE_OPS_DRY_RUN and
+# default it to 0. Until 0.4.0 this is not optional.
+export MOPS_DRY_RUN="$DRY_RUN"
 export MACHINE_OPS_DRY_RUN="$DRY_RUN"
 
 if [[ ! -d "$JOBS_DIR" ]]; then
@@ -235,6 +251,16 @@ for job in "$JOBS_DIR"/*.sh; do
     if [[ "$job_tier" != "$TIER" ]]; then
         log_line "[run] skip $job_name (tier=$job_tier != $TIER)"
         continue
+    fi
+
+    # Legacy-name migration note: a job that reads ONLY MACHINE_OPS_DRY_RUN
+    # still works (both names are exported), but should move to MOPS_DRY_RUN.
+    # Log once per run, never to stdout, and never alert merely because a job
+    # does not touch dry-run at all — a genuinely silent job legitimately
+    # does not.
+    if (( LEGACY_DRY_NOTED == 0 )) \
+        && warn_legacy_dry_run "$job" "[run] job $job_name"; then
+        LEGACY_DRY_NOTED=1
     fi
 
     out_file="$SCRATCH/out-$JOB_COUNT.txt"

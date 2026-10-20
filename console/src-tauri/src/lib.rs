@@ -228,7 +228,7 @@ fn resolved_paths(app: tauri::State<'_, App>) -> R<ResolvedPaths> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let tool_root = paths::tool_root()
-        .expect("MacOps tool root not found (set MACHINE_OPS_TOOL_ROOT)");
+        .expect("MacOps tool root not found (set MOPS_TOOL_ROOT)");
     let (automations_root, automations_source) = paths::automations_root_with_source()
         .expect("cannot resolve the MacOps automations root");
     paths::ensure_dirs(&automations_root)

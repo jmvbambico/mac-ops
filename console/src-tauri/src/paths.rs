@@ -24,9 +24,26 @@ fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
 
+/// Read `primary`, falling back to `legacy` when primary is unset or empty.
+///
+/// The new `MOPS_*` name wins when both are set. The legacy `MACHINE_OPS_*`
+/// names exist only for compatibility until 0.4.0: the owner's own live
+/// automations live in a SEPARATE repository this rename cannot reach, and
+/// there are no third-party users. Mirrors `mops_env_value` in lib/common.sh.
+pub(crate) fn env_alias(primary: &str, legacy: &str) -> Option<std::ffi::OsString> {
+    for key in [primary, legacy] {
+        if let Some(value) = std::env::var_os(key) {
+            if !value.is_empty() {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
 /// The user's automations root. Resolution order, first hit wins:
 ///
-///   1. `$MACHINE_OPS_AUTOMATIONS_ROOT`
+///   1. `$MOPS_AUTOMATIONS_ROOT` (legacy: `$MACHINE_OPS_AUTOMATIONS_ROOT`)
 ///   2. `automations_root` in `~/.config/mops/config.json`
 ///   3. `$HOME/.mops`
 ///
@@ -42,10 +59,25 @@ pub fn automations_root() -> Result<PathBuf> {
 /// exactly one of `"env"`, `"config"` or `"default"`. The console surfaces
 /// this so the split is visible in the GUI.
 pub fn automations_root_with_source() -> Result<(PathBuf, &'static str)> {
-    let env = std::env::var_os("MACHINE_OPS_AUTOMATIONS_ROOT");
+    let primary = std::env::var_os("MOPS_AUTOMATIONS_ROOT");
+    let legacy = std::env::var_os("MACHINE_OPS_AUTOMATIONS_ROOT");
     let config = config_path().ok();
     let home = home_dir();
-    resolve_automations_root(env, config.as_deref(), home.as_deref())
+    resolve_automations_root_alias(primary, legacy, config.as_deref(), home.as_deref())
+}
+
+/// Read-side alias step, split out so tests can prove precedence without
+/// touching the process environment.
+fn resolve_automations_root_alias(
+    env_primary: Option<std::ffi::OsString>,
+    env_legacy: Option<std::ffi::OsString>,
+    config_file: Option<&Path>,
+    home: Option<&Path>,
+) -> Result<(PathBuf, &'static str)> {
+    let env = env_primary
+        .filter(|value| !value.is_empty())
+        .or_else(|| env_legacy.filter(|value| !value.is_empty()));
+    resolve_automations_root(env, config_file, home)
 }
 
 /// The pure resolution step, split out so tests never have to mutate `HOME`.
@@ -120,13 +152,14 @@ pub fn config_path() -> Result<PathBuf> {
 
 /// The installed MacOps tool. Resolution order, first hit wins:
 ///
-///   1. `$MACHINE_OPS_TOOL_ROOT`, when it actually looks like a tool root;
+///   1. `$MOPS_TOOL_ROOT` (legacy: `$MACHINE_OPS_TOOL_ROOT`), when it
+///      actually looks like a tool root;
 ///   2. upward from the running executable (dev builds live under
 ///      `console/src-tauri/target/...`) and then from the current directory.
 ///
 /// There is deliberately no absolute user-path fallback: this repo is public.
 pub fn tool_root() -> Result<PathBuf> {
-    if let Some(value) = std::env::var_os("MACHINE_OPS_TOOL_ROOT") {
+    if let Some(value) = env_alias("MOPS_TOOL_ROOT", "MACHINE_OPS_TOOL_ROOT") {
         let candidate = PathBuf::from(value);
         if looks_like_tool_root(&candidate) {
             return Ok(candidate);
@@ -153,7 +186,7 @@ pub fn tool_root() -> Result<PathBuf> {
             }
         }
     }
-    bail!("could not locate the MacOps tool root (set MACHINE_OPS_TOOL_ROOT)")
+    bail!("could not locate the MacOps tool root (set MOPS_TOOL_ROOT)")
 }
 
 // ---------------------------------------------------------------------------
@@ -261,6 +294,13 @@ mod tests {
             unsafe { std::env::set_var(key, value) };
             EnvVar { key, prev }
         }
+
+        fn set_str(key: &'static str, value: &str) -> EnvVar {
+            let prev = std::env::var_os(key);
+            // SAFETY: as above; the caller holds ENV_LOCK.
+            unsafe { std::env::set_var(key, value) };
+            EnvVar { key, prev }
+        }
     }
     impl Drop for EnvVar {
         fn drop(&mut self) {
@@ -301,6 +341,85 @@ mod tests {
         let (root, source) = resolve_automations_root(None, None, Some(&home)).unwrap();
         assert_eq!(root, home.join(".mops"));
         assert_eq!(source, "default");
+    }
+
+    /// The read-side alias: the new name wins, the legacy name still works,
+    /// and neither means the normal config/default chain. If the legacy read
+    /// ever disappears, the owner's live jobs/config silently move.
+    #[test]
+    fn automations_root_alias_prefers_new_then_legacy_then_default() {
+        let base = Tmp::new("alias");
+        let new_root = base.path().join("new-root");
+        let legacy_root = base.path().join("legacy-root");
+        let home = base.path().join("home");
+        let cfg = write_config(
+            &home,
+            r#"{"automations_root": "CONFIG_ROOT"}"#
+                .replace("CONFIG_ROOT", &base.path().join("config-root").to_string_lossy())
+                .as_str(),
+        );
+
+        // Both set: MOPS_* wins.
+        let (root, source) = resolve_automations_root_alias(
+            Some(new_root.clone().into_os_string()),
+            Some(legacy_root.clone().into_os_string()),
+            Some(&cfg),
+            Some(&home),
+        )
+        .unwrap();
+        assert_eq!(root, new_root);
+        assert_eq!(source, "env");
+
+        // Legacy alone still resolves.
+        let (root, source) = resolve_automations_root_alias(
+            None,
+            Some(legacy_root.clone().into_os_string()),
+            Some(&cfg),
+            Some(&home),
+        )
+        .unwrap();
+        assert_eq!(root, legacy_root);
+        assert_eq!(source, "env");
+
+        // An empty new name is not an override: legacy wins over config.
+        let (root, source) = resolve_automations_root_alias(
+            Some(OsString::new()),
+            Some(legacy_root.clone().into_os_string()),
+            Some(&cfg),
+            Some(&home),
+        )
+        .unwrap();
+        assert_eq!(root, legacy_root);
+        assert_eq!(source, "env");
+
+        // Neither set: config, then default.
+        let (root, source) =
+            resolve_automations_root_alias(None, None, Some(&cfg), Some(&home)).unwrap();
+        assert_eq!(root, base.path().join("config-root"));
+        assert_eq!(source, "config");
+        let (root, source) =
+            resolve_automations_root_alias(None, None, None, Some(&home)).unwrap();
+        assert_eq!(root, home.join(".mops"));
+        assert_eq!(source, "default");
+    }
+
+    #[test]
+    fn tool_root_alias_prefers_new_then_legacy() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let base = Tmp::new("tool-alias");
+        let new_root = base.path().join("tool-new");
+        let legacy_root = base.path().join("tool-legacy");
+        make_tool_root(&new_root);
+        make_tool_root(&legacy_root);
+
+        // Both valid: the new name wins.
+        let _new = EnvVar::set("MOPS_TOOL_ROOT", &new_root);
+        let _legacy = EnvVar::set("MACHINE_OPS_TOOL_ROOT", &legacy_root);
+        assert_eq!(tool_root().unwrap(), new_root);
+
+        // Legacy alone still resolves.
+        let _new_empty = EnvVar::set_str("MOPS_TOOL_ROOT", "");
+        assert_eq!(tool_root().unwrap(), legacy_root);
     }
 
     #[test]
