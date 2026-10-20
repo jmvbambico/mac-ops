@@ -225,6 +225,29 @@ fn resolved_paths(app: tauri::State<'_, App>) -> R<ResolvedPaths> {
     })
 }
 
+/// Persist a user-chosen automations root.
+///
+/// The write changes the CONFIG FILE only. `App` keeps the root it resolved at
+/// startup — the SQLite handle, cached jobs and launchd plists are all derived
+/// from it — so the returned paths describe what the NEXT launch will use, not
+/// a live switch. The UI must say "restart to apply"; a half-switched console
+/// with a stale database would be worse than asking for a restart.
+#[tauri::command]
+fn set_automations_root(app: tauri::State<'_, App>, path: String) -> R<ResolvedPaths> {
+    let config = paths::config_path().map_err(e)?;
+    paths::set_config_root(&config, &app.tool_root, &path).map_err(e)?;
+
+    // Re-resolve for the answer: with $MOPS_AUTOMATIONS_ROOT set the effective
+    // root is still the environment value, and `source` must say so.
+    let (root, source) = paths::automations_root_with_source().map_err(e)?;
+    Ok(ResolvedPaths {
+        tool_root: app.tool_root.to_string_lossy().into_owned(),
+        automations_root: root.to_string_lossy().into_owned(),
+        config_path: config.to_string_lossy().into_owned(),
+        source: source.to_string(),
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let tool_root = paths::tool_root()
@@ -244,7 +267,7 @@ pub fn run() {
             list_jobs, set_enabled, set_schedule, set_timeout, set_meta,
             create_job, delete_job, run_job, runs_for, fleet_history,
             search_logs, load_profile, validate_job, prune_runs, reindex,
-            resolved_paths
+            resolved_paths, set_automations_root
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
