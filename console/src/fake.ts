@@ -1,5 +1,5 @@
 /**
- * An in-memory Backend built from the prototype's 38-automation fixture.
+ * An in-memory Backend built from the prototype's 37-automation fixture.
  *
  * This exists so the UI and every pure helper can be exercised with no Tauri
  * runtime and no Rust (the backend modules are still `todo!()`). It is NEVER a

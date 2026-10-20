@@ -8,7 +8,7 @@ import { ATTN, STATUS_META, lastDuration, statusOf } from "./types";
 export const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 export const esc = (s: unknown): string =>
-  String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c] as string);
+  String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] as string);
 
 export const fmtDur = (s: number): string =>
   s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
@@ -157,16 +157,29 @@ export function runSeverity(r: Run): "info" | "alert" | "err" {
 /**
  * Spread `jobs` across [startMin, endMin) so at most `maxConcurrent` start in
  * the same slot, longest first. Returns the proposed start minute per file.
+ *
+ * Every start is guaranteed to fall inside the requested window. Slot offsets
+ * are `floor(slot * span / slots)`, so they land in [0, span).
+ *
+ * Trade-off: when there are more slots than minutes in the window, distinct
+ * minutes run out. The window is the user's explicit promise and applying the
+ * plan writes real LaunchAgents, so rather than overrun `endMin` we repeat
+ * minutes: several slots then share a minute and the effective concurrency
+ * exceeds `maxConcurrent`. Something has to give — N jobs cannot start in
+ * fewer than N distinct minutes without either leaving the window or sharing
+ * a minute — and the window wins. An empty or inverted window
+ * (`endMin <= startMin`) collapses to a single minute, `startMin`.
  */
 export function staggerPlan(jobs: Job[], startMin: number, endMin: number, maxConcurrent: number): Map<string, number> {
   const span = Math.max(1, endMin - startMin);
+  const perSlot = Math.max(1, maxConcurrent);
   const ordered = [...jobs].sort((a, b) => lastDuration(b) - lastDuration(a));
-  const slots = Math.max(1, Math.ceil(ordered.length / Math.max(1, maxConcurrent)));
-  const step = Math.max(1, Math.floor(span / slots));
+  const slots = Math.max(1, Math.ceil(ordered.length / perSlot));
   const plan = new Map<string, number>();
   ordered.forEach((j, i) => {
-    const slot = Math.floor(i / Math.max(1, maxConcurrent));
-    plan.set(j.file, (startMin + slot * step) % 1440);
+    const slot = Math.floor(i / perSlot);
+    const offset = Math.floor((slot * span) / slots);
+    plan.set(j.file, (startMin + offset) % 1440);
   });
   return plan;
 }

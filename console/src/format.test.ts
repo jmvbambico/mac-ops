@@ -51,6 +51,11 @@ describe("esc", () => {
     expect(esc("<>&\"")).toBe("&lt;&gt;&amp;&quot;");
   });
 
+  it("escapes single quotes for defence in depth", () => {
+    expect(esc("it's")).toBe("it&#39;s");
+    expect(esc("' onmouseover='x")).toBe("&#39; onmouseover=&#39;x");
+  });
+
   it("stringifies non-strings", () => {
     expect(esc(42)).toBe("42");
     expect(esc(null)).toBe("null");
@@ -349,14 +354,43 @@ describe("staggerPlan", () => {
     expect(plan.get("a.sh")).toBe(130);
   });
 
-  it("keeps one minute per slot when the window is too small for the jobs", () => {
+  it("packs slots into shared minutes instead of overrunning a narrow window", () => {
     const jobs = [j("a.sh", 10), j("b.sh", 20), j("c.sh", 30), j("d.sh", 40)];
     const plan = staggerPlan(jobs, 0, 2, 1);
     expect(plan.get("d.sh")).toBe(0);
-    expect(plan.get("c.sh")).toBe(1);
-    expect(plan.get("b.sh")).toBe(2);
-    // the window ends at minute 2 (exclusive) but the last job is pushed past it
-    expect(plan.get("a.sh")).toBe(3);
+    expect(plan.get("c.sh")).toBe(0);
+    expect(plan.get("b.sh")).toBe(1);
+    expect(plan.get("a.sh")).toBe(1);
+    for (const start of plan.values()) expect(start).toBeGreaterThanOrEqual(0);
+    for (const start of plan.values()) expect(start).toBeLessThan(2);
+  });
+
+  it("keeps all 40 starts inside a 30-minute window", () => {
+    const jobs = Array.from({ length: 40 }, (_, i) => j(`${String(i).padStart(2, "0")}.sh`, 100 - i));
+    const plan = staggerPlan(jobs, 120, 150, 1);
+    expect(plan.size).toBe(40);
+    for (const start of plan.values()) {
+      expect(start).toBeGreaterThanOrEqual(120);
+      expect(start).toBeLessThan(150);
+    }
+    expect(Math.max(...plan.values())).toBe(149);
+  });
+
+  it("gives every slot its own minute when the window is exactly as wide", () => {
+    const jobs = ["a.sh", "b.sh", "c.sh", "d.sh", "e.sh"].map((f, i) => j(f, 50 - i));
+    const plan = staggerPlan(jobs, 120, 125, 1);
+    expect([...plan.values()].sort((x, y) => x - y)).toEqual([120, 121, 122, 123, 124]);
+  });
+
+  it("starts a single job at the beginning of the window", () => {
+    const plan = staggerPlan([j("a.sh", 10)], 120, 150, 1);
+    expect(plan.get("a.sh")).toBe(120);
+  });
+
+  it("collapses an empty window to a single minute", () => {
+    const jobs = [j("a.sh", 10), j("b.sh", 20), j("c.sh", 30)];
+    const plan = staggerPlan(jobs, 300, 300, 1);
+    for (const start of plan.values()) expect(start).toBe(300);
   });
 
   it("returns an empty plan for no jobs", () => {
