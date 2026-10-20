@@ -9,7 +9,7 @@
  *  - nothing here touches the DOM. `onChange` is how the UI learns to repaint.
  */
 import { backend, errText } from "./api";
-import type { ResolvedPaths } from "./api";
+import type { ResolvedPathsInfo } from "./api";
 import type { DayStat, Job, Run, Schedule, Status } from "./types";
 import { localLoadProfile, needsAttention, nextRun } from "./format";
 import { lastDuration, statusOf } from "./types";
@@ -39,7 +39,7 @@ export const S = {
   logs: idle<Run[]>(),
   detailRuns: idle<Run[]>(),
   diagnostics: idle<string[]>(),
-  paths: idle<ResolvedPaths>(),
+  paths: idle<ResolvedPathsInfo>(),
 
   // navigation
   view: "overview" as ViewName,
@@ -169,7 +169,7 @@ export const loadDetailRuns = (file: string, limit = 30): Promise<Run[] | null> 
 export const validate = (file: string): Promise<string[] | null> => load(S.diagnostics, () => backend().validateJob(file));
 
 /** Filesystem diagnostics. Read-only: the config is edited outside the GUI. */
-export const loadPaths = (): Promise<ResolvedPaths | null> => load(S.paths, () => backend().resolvedPaths());
+export const loadPaths = (): Promise<ResolvedPathsInfo | null> => load(S.paths, () => backend().resolvedPaths());
 
 /** The data each view needs, kicked off when you navigate to it. */
 export function primeView(): void {

@@ -12,6 +12,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { DayStat, Job, NewJob, Run, RunOutcome, Schedule } from "./types";
 
+export type PathSource = "env" | "config" | "default";
+
 /**
  * Roots the backend resolved at startup. Read-only diagnostics for Settings —
  * the automations root is configured through the environment or config file,
@@ -21,12 +23,48 @@ export interface ResolvedPaths {
   tool_root: string;
   automations_root: string;
   config_path: string;
-  source: "env" | "config" | "default";
+  source: PathSource;
+}
+
+/**
+ * What Settings renders after validation. `source` is null when the backend
+ * sent an unrecognised value: the paths are still sound, so keep them and omit
+ * the badge rather than hiding working diagnostics.
+ */
+export interface ResolvedPathsInfo extends Omit<ResolvedPaths, "source"> {
+  source: PathSource | null;
+}
+
+/**
+ * Narrow guard for the one command whose payload crosses an untyped boundary.
+ * A malformed path field rejects into the normal async error state; only an
+ * unrecognised `source` is tolerated, because it cannot invalidate the paths.
+ */
+export function parseResolvedPaths(raw: unknown): ResolvedPathsInfo {
+  if (!raw || typeof raw !== "object") throw new Error("resolved_paths: response is not an object");
+  const r = raw as Record<string, unknown>;
+  const text = (key: string): string => {
+    const value = r[key];
+    if (typeof value !== "string" || value.trim() === "") {
+      throw new Error(`resolved_paths: ${key} is missing or empty`);
+    }
+    return value;
+  };
+  const paths = {
+    tool_root: text("tool_root"),
+    automations_root: text("automations_root"),
+    config_path: text("config_path"),
+  };
+  const source = r.source;
+  return {
+    ...paths,
+    source: source === "env" || source === "config" || source === "default" ? source : null,
+  };
 }
 
 export interface Backend {
   listJobs(): Promise<Job[]>;
-  resolvedPaths(): Promise<ResolvedPaths>;
+  resolvedPaths(): Promise<ResolvedPathsInfo>;
   setEnabled(file: string, enabled: boolean): Promise<void>;
   setSchedule(file: string, schedule: Schedule): Promise<void>;
   setTimeout(file: string, secs: number): Promise<void>;
@@ -50,7 +88,7 @@ export interface Backend {
  */
 export const tauriBackend: Backend = {
   listJobs: () => invoke<Job[]>("list_jobs"),
-  resolvedPaths: () => invoke<ResolvedPaths>("resolved_paths"),
+  resolvedPaths: () => invoke<unknown>("resolved_paths").then(parseResolvedPaths),
   setEnabled: (file, enabled) => invoke<void>("set_enabled", { file, enabled }),
   setSchedule: (file, schedule) => invoke<void>("set_schedule", { file, schedule }),
   setTimeout: (file, secs) => invoke<void>("set_timeout", { file, secs }),
