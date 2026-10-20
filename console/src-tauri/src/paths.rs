@@ -76,14 +76,34 @@ struct ConfigFile {
     automations_root: Option<String>,
 }
 
+/// Python's `str.strip()` — the reference trim used by lib/common.sh — treats
+/// the four ASCII separator controls (U+001C..U+001F) as whitespace, while
+/// Rust's `char::is_whitespace` (Unicode White_Space) does not. Both readers
+/// MUST store exactly the same path, so mirror Python's set here.
+fn is_python_whitespace(c: char) -> bool {
+    c.is_whitespace() || matches!(c, '\u{1c}' | '\u{1d}' | '\u{1e}' | '\u{1f}')
+}
+
+fn trim_like_bash_config(s: &str) -> &str {
+    s.trim_matches(is_python_whitespace)
+}
+
 /// Read `automations_root` from the config file. Returns None for a missing
 /// file, unreadable content, invalid JSON, or a non-string/empty value — all of
 /// which fall through to the default root instead of failing the run.
+///
+/// The value is trimmed exactly as lib/common.sh's Python reader trims it:
+/// the stored path must be byte-identical on both sides, or the GUI and the
+/// 02:00 run read different directories (a parser that disagrees with
+/// bin/run). Rust's serde typing also rejects non-string values and non-object
+/// top levels, matching Bash's `isinstance` guards. Neither side expands `~`
+/// or resolves a relative path: both pass the string through unchanged.
 fn read_config_root(path: &Path) -> Option<PathBuf> {
     let raw = std::fs::read_to_string(path).ok()?;
     let cfg: ConfigFile = serde_json::from_str(&raw).ok()?;
-    let value = cfg.automations_root?;
-    if value.trim().is_empty() {
+    let raw_value = cfg.automations_root?;
+    let value = trim_like_bash_config(&raw_value);
+    if value.is_empty() {
         return None;
     }
     Some(PathBuf::from(value))
@@ -344,6 +364,128 @@ mod tests {
             resolve_automations_root(None, Some(&cfg), Some(&home)).unwrap();
         assert_eq!(root, wanted);
         assert_eq!(source, "config");
+    }
+
+    /// The blocking defect: Rust stored the untrimmed value while
+    /// lib/common.sh's Python reader stored `value.strip()`. A trailing space
+    /// is a different directory on macOS, so the GUI and the 02:00 run would
+    /// disagree. These cases assert the trimmed path is what gets stored.
+    #[test]
+    fn config_value_is_trimmed_exactly_like_bin_run() {
+        let base = Tmp::new("trim");
+        let home = base.path().join("home");
+        let cases = [
+            (r#"{"automations_root": "  /Volumes/MacOps  "}"#, "/Volumes/MacOps"),
+            (r#"{"automations_root": "\t/Volumes/My Disk\n"}"#, "/Volumes/My Disk"),
+            (r#"{"automations_root": "\r\n/Volumes/First\r\n"}"#, "/Volumes/First"),
+            // Python's str.strip() also treats U+001C..U+001F as whitespace;
+            // Rust's char::is_whitespace alone does not.
+            (r#"{"automations_root": "\u001c/Volumes/Separated\u001f"}"#, "/Volumes/Separated"),
+        ];
+        for (body, want) in cases {
+            let cfg = write_config(&home, body);
+            let (root, source) =
+                resolve_automations_root(None, Some(&cfg), Some(&home)).unwrap();
+            assert_eq!(root, PathBuf::from(want), "config {body:?}");
+            assert_eq!(source, "config");
+        }
+    }
+
+    #[test]
+    fn whitespace_only_config_value_falls_through() {
+        let base = Tmp::new("ws-only");
+        let home = base.path().join("home");
+        for body in [
+            r#"{"automations_root": "   "}"#,
+            r#"{"automations_root": "\t\n\r"}"#,
+            r#"{"automations_root": "\u001c\u001d\u001e\u001f"}"#,
+        ] {
+            let cfg = write_config(&home, body);
+            let (root, source) =
+                resolve_automations_root(None, Some(&cfg), Some(&home)).unwrap();
+            assert_eq!(root, home.join(".mops"), "config {body:?}");
+            assert_eq!(source, "default");
+        }
+    }
+
+    /// Bash guards with `isinstance(value, str)`; serde's typed Option<String>
+    /// rejects every non-string, so both fall through to the default.
+    #[test]
+    fn non_string_config_value_falls_through() {
+        let base = Tmp::new("non-string");
+        let home = base.path().join("home");
+        for body in [
+            r#"{"automations_root": 42}"#,
+            r#"{"automations_root": true}"#,
+            r#"{"automations_root": null}"#,
+            r#"{"automations_root": []}"#,
+            r#"{"automations_root": ["/Volumes/X"]}"#,
+            r#"{"automations_root": {}}"#,
+        ] {
+            let cfg = write_config(&home, body);
+            let (root, source) =
+                resolve_automations_root(None, Some(&cfg), Some(&home)).unwrap();
+            assert_eq!(root, home.join(".mops"), "config {body:?}");
+            assert_eq!(source, "default");
+        }
+    }
+
+    /// Bash guards with `isinstance(data, dict)`; serde's struct deserializer
+    /// rejects a non-object top level, so both fall through to the default.
+    #[test]
+    fn non_object_config_falls_through() {
+        let base = Tmp::new("non-object");
+        let home = base.path().join("home");
+        for body in ["[]", "[1, 2]", "\"a string\"", "42", "true", "null"] {
+            let cfg = write_config(&home, body);
+            let (root, source) =
+                resolve_automations_root(None, Some(&cfg), Some(&home)).unwrap();
+            assert_eq!(root, home.join(".mops"), "config {body:?}");
+            assert_eq!(source, "default");
+        }
+    }
+
+    /// Neither reader expands `~` or resolves a relative path; both pass the
+    /// string through unchanged. Consistency, not capability.
+    #[test]
+    fn relative_and_tilde_paths_are_passed_through_by_both_readers() {
+        let base = Tmp::new("relative");
+        let home = base.path().join("home");
+        for want in ["relative/path", "~/macops"] {
+            let body = format!(r#"{{"automations_root": "{want}"}}"#);
+            let cfg = write_config(&home, &body);
+            let (root, source) =
+                resolve_automations_root(None, Some(&cfg), Some(&home)).unwrap();
+            assert_eq!(root, PathBuf::from(want));
+            assert_eq!(source, "config");
+            assert_ne!(root, home.join("macops"), "neither side expands ~");
+        }
+    }
+
+    /// Python's json rejects invalid UTF-8 and a leading BOM; Rust's
+    /// read_to_string/serde_json must also fall through rather than abort.
+    #[test]
+    fn invalid_utf8_and_bom_config_fall_through() {
+        let base = Tmp::new("encoding");
+        let home = base.path().join("home");
+        let cfg = home.join(".config/mops/config.json");
+        std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+
+        std::fs::write(&cfg, [0xff, 0xfe, b'{', b'}']).unwrap();
+        let (root, source) =
+            resolve_automations_root(None, Some(&cfg), Some(&home)).unwrap();
+        assert_eq!(root, home.join(".mops"), "invalid UTF-8 must fall through");
+        assert_eq!(source, "default");
+
+        std::fs::write(
+            &cfg,
+            "\u{feff}{\"automations_root\": \"/Volumes/Bom\"}",
+        )
+        .unwrap();
+        let (root, source) =
+            resolve_automations_root(None, Some(&cfg), Some(&home)).unwrap();
+        assert_eq!(root, home.join(".mops"), "a BOM must fall through like Python");
+        assert_eq!(source, "default");
     }
 
     #[test]
