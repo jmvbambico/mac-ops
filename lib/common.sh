@@ -156,6 +156,14 @@ log_line() {
 # names are exported with the same value, the job still works correctly at
 # runtime; this is a migration record, not an alert. Callers that run many
 # jobs must gate this on their own once-per-run flag.
+#
+# The match is LEXICAL, not a real read detector: it misses non-`$` reads such
+# as `printenv MACHINE_OPS_DRY_RUN` or `os.environ["MACHINE_OPS_DRY_RUN"]` in a
+# quoted heredoc, and can match a comment containing a literal expression.
+# Safety comes from exporting BOTH names unconditionally. So when 0.4.0
+# removes the alias, the absence of notes here is NOT evidence that nothing
+# reads the legacy name: the precondition is that the owner's automations have
+# been migrated and verified directly.
 warn_legacy_dry_run() {
     local file="$1" context="${2:-job}"
     [[ -f "$file" ]] || return 1
