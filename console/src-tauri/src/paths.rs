@@ -210,18 +210,28 @@ fn resolve_deepest(requested: &Path) -> Result<(PathBuf, bool)> {
 
 /// True when `requested` is the tool root itself or lies strictly inside it.
 ///
-/// The check runs on the RESOLVED path, not on lexical ancestors: `create_dir_all`
-/// follows symlinks, so validating the unresolved spelling lets a symlink from
-/// outside into a tool subdirectory escape the guard. `resolve_deepest` returns
-/// the canonical existing ancestor; anything the caller then creates lives
-/// below it, so only that directory and its real parents matter.
+/// Resolve first, then check, then create: the check runs on the RESOLVED
+/// path, so the directory validated is the directory written to. Two review
+/// proof-of-concepts motivate this: a differently-cased spelling on a
+/// case-insensitive volume, where `realpath(3)` preserves the caller's
+/// spelling and a string comparison misses the match; and a symlink resolving
+/// to a tool descendant, where lexical parents never reach the tool root while
+/// `create_dir_all` writes through the link. Comparing `(dev, ino)` rather
+/// than strings makes both spellings collapse to the same identity.
 ///
 /// An existing directory equal to the tool root is the documented in-place
 /// checkout and is allowed; a strict ancestor equal to it (or the root with a
 /// missing tail) means the target lands inside the tool tree and is rejected.
-/// Identity comparison keeps this immune to case spelling, symlinks and hard
-/// links. TOCTOU between this check and `ensure_dirs` is accepted: this is a
-/// single-user settings write, not a privilege boundary.
+///
+/// This guards ACCIDENTAL violations, not a privilege boundary: a FUSE
+/// passthrough mount (bindfs on macFUSE) could alias a tool subtree to an
+/// outside path and defeat the identity check. macOS has no native bind mount
+/// and the kernel refuses directory hard links, so that requires third-party
+/// software the user deliberately installs and configures. The same person
+/// owns the tool directory, the config file and the machine, and can edit
+/// `~/.config/mops/config.json` directly with no guard at all, so this is
+/// accepted as proportionate. TOCTOU between this check and `ensure_dirs` is
+/// accepted for the same reason: a single-user settings write.
 fn targets_tool_root(requested: &Path, tool_root: &Path) -> Result<bool> {
     let tool = file_identity(tool_root)
         .with_context(|| format!("inspect the tool root {}", tool_root.display()))?;
