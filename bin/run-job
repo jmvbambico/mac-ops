@@ -6,7 +6,7 @@
 #
 # The machine-ops console manages one user LaunchAgent per enabled job, each
 # invoking this wrapper rather than the tier dispatcher:
-#   /bin/bash <repo>/bin/run-job <repo>/jobs/<file>.sh
+#   /bin/bash <tool-root>/bin/run-job <automations-root>/jobs/<file>.sh
 # so a job can run on its own schedule without also running its tier peers.
 #
 # Silent-on-success: a nominal run prints NOTHING. Captured job stdout IS the
@@ -19,7 +19,7 @@
 # (accepted 1..86400, same anchored parse/validation as bin/run). The job runs
 # in its own process group with stdin from /dev/null; on timeout the whole
 # group is TERM'd, given a short grace, then KILL'd. A timestamped one-line
-# summary always goes to logs/machine-ops.log, and captured job output goes
+# summary always goes to <automations-root>/logs/machine-ops.log, and captured job output goes
 # there too so a launchd-run job leaves a readable trail.
 #
 # Exit status is 0 after a completed run whether the job spoke or not — stdout
@@ -38,10 +38,10 @@ usage() {
     printf 'Usage: %s <path-to-job.sh>\n' "$(basename "$0")" >&2
 }
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LOG_DIR="$REPO_ROOT/logs"
-LOG_FILE="$LOG_DIR/machine-ops.log"
-export MACHINE_OPS_LOG="$LOG_FILE"
+# The tool root is where this wrapper and lib/ live. The automations root is
+# the user's data directory and is resolved separately below.
+TOOL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export MACHINE_OPS_TOOL_ROOT="$TOOL_ROOT"
 
 # Per-job wall-clock timeout, matching bin/run's default. A job may override
 # it with "# timeout: <secs>" on line 3.
@@ -50,10 +50,19 @@ JOB_TIMEOUT_SEC=900
 JOB_KILL_GRACE_SEC=5
 
 # shellcheck disable=SC1091 # path resolved at runtime from the script location
-if ! source "$REPO_ROOT/lib/common.sh"; then
+if ! source "$TOOL_ROOT/lib/common.sh"; then
     printf 'bin/run-job: cannot load lib/common.sh\n' >&2
     exit 1
 fi
+
+if ! AUTOMATIONS_ROOT="$(machine_ops_automations_root)"; then
+    printf 'bin/run-job: cannot resolve the automations root\n' >&2
+    exit 1
+fi
+export MACHINE_OPS_AUTOMATIONS_ROOT="$AUTOMATIONS_ROOT"
+LOG_DIR="$AUTOMATIONS_ROOT/logs"
+LOG_FILE="$LOG_DIR/machine-ops.log"
+export MACHINE_OPS_LOG="$LOG_FILE"
 
 if (( $# != 1 )); then
     usage

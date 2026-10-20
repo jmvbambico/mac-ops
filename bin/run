@@ -19,7 +19,9 @@
 # group is killed and the timeout alerts loudly). A job that exits 0 stays silent even if it wrote to stderr —
 # mole logs benign noise there and alerting on it would false-alarm.
 # A timestamped record of every run is always appended to
-# logs/machine-ops.log (rotated past ~5 MB, one .1 backup kept).
+# <automations-root>/logs/machine-ops.log (rotated past ~5 MB, one .1 backup).
+# This script lives in the tool root; jobs/, logs/ and state/ belong to the
+# separate automations root.
 #
 # Exit status is 0 even when jobs report problems — stdout is the alert
 # channel, not the exit code. Non-zero only when the dispatcher itself is
@@ -39,11 +41,11 @@ usage() {
     printf 'Usage: %s [daily|weekly] [--dry-run]\n' "$(basename "$0")" >&2
 }
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-JOBS_DIR="$REPO_ROOT/jobs"
-LOG_DIR="$REPO_ROOT/logs"
-LOG_FILE="$LOG_DIR/machine-ops.log"
-export MACHINE_OPS_LOG="$LOG_FILE"
+# The tool root is where this script and lib/ live. The automations root is
+# the user's data directory and is resolved separately below; they may be the
+# same directory (a checkout used in place) but must never be conflated.
+TOOL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export MACHINE_OPS_TOOL_ROOT="$TOOL_ROOT"
 
 # Per-job wall-clock timeout. Observed baselines: optimize ~20s, clean ~52s
 # in apply mode, so 900s (15 min) is ~17x headroom and only a genuine hang
@@ -54,10 +56,20 @@ JOB_TIMEOUT_SEC=900
 JOB_KILL_GRACE_SEC=5
 
 # shellcheck disable=SC1091 # path resolved at runtime from the script location
-if ! source "$REPO_ROOT/lib/common.sh"; then
+if ! source "$TOOL_ROOT/lib/common.sh"; then
     printf 'bin/run: cannot load lib/common.sh\n' >&2
     exit 1
 fi
+
+if ! AUTOMATIONS_ROOT="$(machine_ops_automations_root)"; then
+    printf 'bin/run: cannot resolve the automations root\n' >&2
+    exit 1
+fi
+export MACHINE_OPS_AUTOMATIONS_ROOT="$AUTOMATIONS_ROOT"
+JOBS_DIR="$AUTOMATIONS_ROOT/jobs"
+LOG_DIR="$AUTOMATIONS_ROOT/logs"
+LOG_FILE="$LOG_DIR/machine-ops.log"
+export MACHINE_OPS_LOG="$LOG_FILE"
 
 TIER="daily"
 DRY_RUN="0"
@@ -129,7 +141,7 @@ rotate_log
 # means enabled; a parse/read failure also means enabled — FAIL SAFE TOWARD
 # RUNNING, so a broken state file can never silently stop maintenance. Only
 # an explicit "enabled": false skips.
-CONSOLE_STATE="$REPO_ROOT/state/console.json"
+CONSOLE_STATE="$AUTOMATIONS_ROOT/state/console.json"
 DISABLED_JOBS=""
 if [[ -f "$CONSOLE_STATE" ]]; then
     if ! DISABLED_JOBS="$(/usr/bin/python3 - "$CONSOLE_STATE" <<'PY' 2>/dev/null
