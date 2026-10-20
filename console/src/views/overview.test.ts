@@ -113,6 +113,35 @@ describe("vOverview — escaping", () => {
   });
 });
 
+describe("vOverview — heatmap keys", () => {
+  it("keeps groups distinct when their names contain separator characters", () => {
+    const list = allQuiet(fleet)
+      .slice(0, 2)
+      .map((j, i) => ({ ...j, group: i === 0 ? "Power:Mgmt" : "Power-Mgmt" }));
+    S.jobs = { data: list, error: null, loading: false };
+    S.fleet = {
+      data: [
+        { day: "2026-03-10", group: "Power:Mgmt", status: "fail" },
+        { day: "2026-03-10", group: "Power-Mgmt", status: "quiet" },
+      ],
+      error: null,
+      loading: false,
+    };
+
+    const html = vOverview();
+    const cells = (name: string): string => {
+      const row = html
+        .split('<div class="fleet-row">')
+        .find((r) => r.includes(`<div class="fleet-name">${esc(name)}</div>`));
+      return row?.match(/<div class="fleet-cells">([\s\S]*?)<\/div>/)?.[1] ?? "";
+    };
+
+    expect(cells("Power:Mgmt")).toContain('class="fail"');
+    expect(cells("Power:Mgmt")).not.toContain('class="quiet"');
+    expect(cells("Power-Mgmt")).toContain('class="quiet"');
+  });
+});
+
 describe("vOverview — scale", () => {
   it("keeps the 37-job fleet grouped into 6 group cards", () => {
     S.jobs = { data: fleet, error: null, loading: false };
