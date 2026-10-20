@@ -3,8 +3,9 @@
  * commands the backend exposes (prune_runs, reindex).
  */
 import { IC } from "../icons";
-import { groupsOf, localLoadProfile } from "../format";
+import { esc, groupsOf, localLoadProfile } from "../format";
 import { S, jobs } from "../store";
+import { asyncPanel } from "./common";
 
 export function vSettings(): string {
   const all = jobs();
@@ -30,6 +31,20 @@ export function vSettings(): string {
       heatmap and every bulk action. Without them MacOps degrades into a flat list the moment you pass
       roughly a dozen automations.</div>
     </div>
+  </div>
+
+  <div class="sec-h"><h3>Paths</h3><span class="ln"></span></div>
+  <div class="card pad col" style="gap:11px">
+    ${asyncPanel(S.paths, "Resolved paths unavailable", "paths", (p) => `
+    <dl class="kv">
+      <dt>Tool root</dt><dd class="mono">${esc(p.tool_root)}</dd>
+      <dt>Automations root</dt><dd class="mono">${esc(p.automations_root)}
+        <span class="badge tier" style="margin-left:5px">${esc(p.source)}</span></dd>
+      <dt>Config file</dt><dd class="mono">${esc(p.config_path)}</dd>
+    </dl>
+    <div class="muted" style="font-size:11.5px">Read-only diagnostics. The automations root is resolved from
+      <span class="mono">MACHINE_OPS_ROOT</span>, then the config file, then the conventional default — it is
+      deliberately not editable from the GUI.</div>`)}
   </div>
 
   <div class="sec-h"><h3>Run database</h3><span class="ln"></span></div>

@@ -12,8 +12,21 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { DayStat, Job, NewJob, Run, RunOutcome, Schedule } from "./types";
 
+/**
+ * Roots the backend resolved at startup. Read-only diagnostics for Settings —
+ * the automations root is configured through the environment or config file,
+ * never from the GUI.
+ */
+export interface ResolvedPaths {
+  tool_root: string;
+  automations_root: string;
+  config_path: string;
+  source: "env" | "config" | "default";
+}
+
 export interface Backend {
   listJobs(): Promise<Job[]>;
+  resolvedPaths(): Promise<ResolvedPaths>;
   setEnabled(file: string, enabled: boolean): Promise<void>;
   setSchedule(file: string, schedule: Schedule): Promise<void>;
   setTimeout(file: string, secs: number): Promise<void>;
@@ -37,6 +50,7 @@ export interface Backend {
  */
 export const tauriBackend: Backend = {
   listJobs: () => invoke<Job[]>("list_jobs"),
+  resolvedPaths: () => invoke<ResolvedPaths>("resolved_paths"),
   setEnabled: (file, enabled) => invoke<void>("set_enabled", { file, enabled }),
   setSchedule: (file, schedule) => invoke<void>("set_schedule", { file, schedule }),
   setTimeout: (file, secs) => invoke<void>("set_timeout", { file, secs }),

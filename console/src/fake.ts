@@ -161,6 +161,14 @@ export function fakeBackend(): Backend {
     async listJobs() {
       return jobs.map((j) => ({ ...j }));
     },
+    async resolvedPaths() {
+      return {
+        tool_root: "/opt/mac-ops/tool",
+        automations_root: "~/mac-ops",
+        config_path: "~/.config/mops/config.json",
+        source: "default" as const,
+      };
+    },
     async setEnabled(file, enabled) {
       find(file).enabled = enabled;
     },
