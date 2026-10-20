@@ -137,8 +137,14 @@ ts() {
 
 # log_line <msg> — append one timestamped line to the run log.
 # Never fails the caller: logging must not break a watchdog.
+#
+# The guard must come BEFORE the path is expanded. "${MOPS_LOG:?}" would abort
+# a non-interactive shell during word expansion — before `|| true` or a
+# redirection could help — when a job runs with HOME unset and no log path
+# configured. With no log, logging is a silent no-op (never stdout: Principle I).
 log_line() {
-    printf '%s %s\n' "$(ts)" "$*" >> "${MOPS_LOG:?}" 2>/dev/null || true
+    [[ -n "${MOPS_LOG:-}" ]] || return 0
+    printf '%s %s\n' "$(ts)" "$*" >> "$MOPS_LOG" 2>/dev/null || true
 }
 
 # warn_legacy_dry_run <job-file> <context> — log ONE migration note when a job
@@ -153,8 +159,13 @@ log_line() {
 warn_legacy_dry_run() {
     local file="$1" context="${2:-job}"
     [[ -f "$file" ]] || return 1
-    if grep -q 'MACHINE_OPS_DRY_RUN' "$file" 2>/dev/null \
-        && ! grep -q 'MOPS_DRY_RUN' "$file" 2>/dev/null; then
+    # Match an actual variable EXPANSION, not a prose mention: the `$` sigil is
+    # required, so `${MACHINE_OPS_DRY_RUN:-0}` and `$MACHINE_OPS_DRY_RUN` count
+    # while a bare comment mention does not. The "already migrated" check uses
+    # the same shape; MOPS_DRY_RUN cannot satisfy it via the legacy name
+    # because the sigil must sit immediately before MOPS (not after MACHINE_).
+    if grep -Eq '\$[{]?MACHINE_OPS_DRY_RUN([^A-Za-z0-9_]|$)' "$file" 2>/dev/null \
+        && ! grep -Eq '\$[{]?MOPS_DRY_RUN([^A-Za-z0-9_]|$)' "$file" 2>/dev/null; then
         log_line "${context} reads deprecated MACHINE_OPS_DRY_RUN; migrate to MOPS_DRY_RUN (legacy alias kept until 0.4.0)"
         return 0
     fi
