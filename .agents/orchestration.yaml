@@ -1,0 +1,69 @@
+# Machine-readable orchestration contract for MacOps.
+# AGENTS.md is the constitution and takes precedence on anything not covered
+# here. Hand-written: `og init` detects no toolchain because the Cargo project
+# is nested under console/src-tauri rather than at the repo root.
+
+branches:
+  # GitFlow: branch from dev, PR back into dev. main is release-only.
+  integration_base: dev
+  protected: [main, dev]
+  task_prefix: feature/
+
+gates:
+  # scope: worker -> runs in EACH implementer's worktree.
+  # no scope      -> runs ONCE on the integration branch.
+
+  - name: shell-syntax
+    run: "bash -n bin/run && bash -n bin/run-job && bash -n lib/common.sh && bash -n install.sh && for j in examples/jobs/*.sh; do bash -n \"$j\" || exit 1; done"
+    scope: worker
+
+  - name: shellcheck
+    run: "shellcheck bin/run bin/run-job lib/common.sh install.sh examples/jobs/*.sh"
+    scope: worker
+
+  - name: rust-check
+    run: "cd console/src-tauri && cargo check --message-format=short"
+    scope: worker
+
+  - name: rust-test
+    run: "cd console/src-tauri && cargo test --lib"
+    scope: worker
+
+  - name: frontend-typecheck
+    run: "cd console && npm ci --silent && npx tsc --noEmit"
+    scope: worker
+
+  # Integration-only: slower, and shares the npm/cargo cache.
+  - name: frontend-build
+    run: "cd console && npm run build"
+
+  # TODO (first PR): add tests/silent-contract.sh — run bin/run against a
+  # SYNTHETIC fixture automations root whose jobs are known-silent, and assert
+  # stdout is empty. It must be hermetic: the gate may never invoke the real
+  # mole/brew on a contributor's machine. Register it here as an unscoped gate
+  # once it exists. Deliberately not listed yet: og's rule is that a gate
+  # command which is wrong is worse than one that is absent.
+
+never_write:
+  - "logs/**"
+  - "state/**"
+  - "console/node_modules/**"
+  - "console/dist/**"
+  - "console/src-tauri/target/**"
+
+merge_policy:
+  # Every merge is a human decision until the gates have been watched on real
+  # PRs. main and dev are protected above, so merge_gate DENYs into them.
+  enabled: false
+  auto_merge_target: dev
+  max_diff_lines: 400
+  max_diff_files: 15
+  high_risk_paths:
+    - "bin/**"                              # dispatcher and single-job runner
+    - "lib/common.sh"                       # every job sources this
+    - "install.sh"                          # writes to ~/Library/LaunchAgents
+    - "launchagents/**"
+    - "console/src-tauri/src/launchd.rs"    # generates what launchd loads
+    - "console/src-tauri/src/jobs.rs"       # must agree with bin/run's parser
+    - ".github/workflows/**"
+  require_cross_vendor_review: true

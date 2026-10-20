@@ -1,0 +1,1427 @@
+<title>machine-ops console</title>
+<style>
+:root{
+  --bg:#ececed; --panel:#fff; --panel-2:#f7f7f8; --side:#f2f2f3;
+  --line:#dededf; --line-soft:#eaeaeb;
+  --ink:#1d1d20; --ink-2:#5c5c63; --ink-3:#8a8a92;
+  --accent:#0a6cff; --accent-ink:#fff; --accent-soft:rgba(10,108,255,.10);
+  --quiet:#17865a; --quiet-bg:rgba(23,134,90,.11);
+  --spoke:#ab6100; --spoke-bg:rgba(201,120,0,.13);
+  --fail:#c9282d; --fail-bg:rgba(201,40,45,.11);
+  --hang:#7b3fb5; --hang-bg:rgba(123,63,181,.12);
+  --off:#76767e; --off-bg:rgba(118,118,126,.12);
+  --shadow-1:0 .5px 1px rgba(0,0,0,.09),0 1px 2px rgba(0,0,0,.05);
+  --shadow-2:0 .5px 1px rgba(0,0,0,.08),0 2px 5px rgba(0,0,0,.07),0 8px 20px rgba(0,0,0,.06);
+  --shadow-win:0 0 0 .5px rgba(0,0,0,.14),0 12px 34px rgba(0,0,0,.17);
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace;
+  --r-win:11px; --r-panel:10px; --r-card:8px; --r-ctl:6px;
+}
+:root:not([data-theme=light]){ @media (prefers-color-scheme:dark){
+  --bg:#141416; --panel:#1e1e21; --panel-2:#26262a; --side:#191a1c;
+  --line:#33333a; --line-soft:#2a2a2f;
+  --ink:#f2f2f5; --ink-2:#a8a8b2; --ink-3:#74747e;
+  --accent:#3b8bff; --accent-soft:rgba(59,139,255,.16);
+  --quiet:#43c08a; --quiet-bg:rgba(67,192,138,.14);
+  --spoke:#e5a33c; --spoke-bg:rgba(229,163,60,.15);
+  --fail:#ff6b6f; --fail-bg:rgba(255,107,111,.14);
+  --hang:#b98cf0; --hang-bg:rgba(185,140,240,.15);
+  --off:#8b8b95; --off-bg:rgba(139,139,149,.14);
+  --shadow-1:0 .5px 1px rgba(0,0,0,.4);
+  --shadow-2:0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.45);
+  --shadow-win:0 0 0 .5px rgba(255,255,255,.09),0 14px 40px rgba(0,0,0,.6);
+}}
+:root[data-theme=dark]{
+  --bg:#141416; --panel:#1e1e21; --panel-2:#26262a; --side:#191a1c;
+  --line:#33333a; --line-soft:#2a2a2f;
+  --ink:#f2f2f5; --ink-2:#a8a8b2; --ink-3:#74747e;
+  --accent:#3b8bff; --accent-soft:rgba(59,139,255,.16);
+  --quiet:#43c08a; --quiet-bg:rgba(67,192,138,.14);
+  --spoke:#e5a33c; --spoke-bg:rgba(229,163,60,.15);
+  --fail:#ff6b6f; --fail-bg:rgba(255,107,111,.14);
+  --hang:#b98cf0; --hang-bg:rgba(185,140,240,.15);
+  --off:#8b8b95; --off-bg:rgba(139,139,149,.14);
+  --shadow-1:0 .5px 1px rgba(0,0,0,.4);
+  --shadow-2:0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.45);
+  --shadow-win:0 0 0 .5px rgba(255,255,255,.09),0 14px 40px rgba(0,0,0,.6);
+}
+*{box-sizing:border-box}
+body{
+  margin:0;background:var(--bg);color:var(--ink);
+  font:13px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;
+  font-variant-numeric:tabular-nums;
+  padding:22px 16px;padding-block:22px;
+}
+h1,h2,h3{text-wrap:balance;margin:0}
+p{text-wrap:pretty}
+.mono{font-family:var(--mono)}
+
+/* ---------- window chrome ---------- */
+.win{max-width:1180px;margin:0 auto;background:var(--panel);border-radius:var(--r-win);
+  box-shadow:var(--shadow-win);overflow:hidden;display:flex;flex-direction:column;min-height:min(840px,88vh)}
+.titlebar{display:flex;align-items:center;gap:12px;height:46px;padding:0 13px;
+  border-bottom:.5px solid var(--line);background:var(--side);flex:0 0 auto}
+.lights{display:flex;gap:8px;flex:0 0 auto}
+.lights i{width:12px;height:12px;border-radius:50%;display:block;
+  box-shadow:inset 0 0 0 .5px rgba(0,0,0,.14)}
+.lights i:nth-child(1){background:#ff5f57}.lights i:nth-child(2){background:#febc2e}
+.lights i:nth-child(3){background:#28c840}
+.tb-title{font-weight:600;font-size:13px;letter-spacing:-.01em}
+.tb-title span{color:var(--ink-3);font-weight:400}
+.tb-right{margin-left:auto;display:flex;align-items:center;gap:8px}
+
+/* ---------- shell ---------- */
+.shell{display:flex;flex:1 1 auto;min-height:0}
+.sidebar{width:216px;flex:0 0 216px;background:var(--side);border-right:.5px solid var(--line);
+  padding:10px 9px;overflow-y:auto}
+.nav-label{font-size:10.5px;font-weight:600;letter-spacing:.055em;text-transform:uppercase;
+  color:var(--ink-3);padding:10px 8px 5px}
+.nav-item{display:flex;align-items:center;gap:8px;width:100%;min-height:30px;padding:0 8px;
+  border:0;background:none;color:var(--ink);font:inherit;text-align:left;
+  border-radius:var(--r-ctl);cursor:pointer;
+  transition-property:background-color,color;transition-duration:120ms}
+.nav-item:hover{background:rgba(127,127,135,.13)}
+.nav-item[aria-current=true]{background:var(--accent);color:var(--accent-ink);font-weight:500}
+.nav-item[aria-current=true] .ic{color:var(--accent-ink)}
+.nav-item .ic{color:var(--ink-2);flex:0 0 auto}
+.nav-item .cnt{margin-left:auto;font-size:11px;color:var(--ink-3);font-weight:500}
+.nav-item[aria-current=true] .cnt{color:rgba(255,255,255,.75)}
+.sb-job{display:flex;align-items:center;gap:8px;width:100%;min-height:30px;padding:0 8px;border:0;
+  background:none;color:var(--ink);font:inherit;text-align:left;border-radius:var(--r-ctl);cursor:pointer;
+  transition-property:background-color;transition-duration:120ms}
+.sb-job:hover{background:rgba(127,127,135,.13)}
+.sb-job.sel{background:rgba(127,127,135,.18)}
+.sb-job .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px}
+.sb-job.dis .nm{color:var(--ink-3);text-decoration:line-through;text-decoration-color:var(--ink-3)}
+
+.main{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;background:var(--panel)}
+.toolbar{display:flex;align-items:center;gap:9px;padding:11px 16px;border-bottom:.5px solid var(--line);
+  flex:0 0 auto;background:var(--panel)}
+.toolbar h2{font-size:14.5px;font-weight:600;letter-spacing:-.012em}
+.toolbar .sub{color:var(--ink-3);font-size:12px}
+.spacer{margin-left:auto}
+.scroll{flex:1 1 auto;overflow-y:auto;padding:16px;min-height:0}
+
+/* ---------- dots & badges ---------- */
+.dot{width:8px;height:8px;border-radius:50%;flex:0 0 auto;display:block;
+  box-shadow:0 0 0 2.5px var(--ring,transparent)}
+.dot.quiet{background:var(--quiet);--ring:var(--quiet-bg)}
+.dot.spoke{background:var(--spoke);--ring:var(--spoke-bg)}
+.dot.fail{background:var(--fail);--ring:var(--fail-bg)}
+.dot.hang{background:var(--hang);--ring:var(--hang-bg)}
+.dot.off{background:var(--off);--ring:var(--off-bg)}
+.badge{display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 7px;border-radius:5px;
+  font-size:11px;font-weight:600;letter-spacing:.005em;white-space:nowrap}
+.badge.quiet{color:var(--quiet);background:var(--quiet-bg)}
+.badge.spoke{color:var(--spoke);background:var(--spoke-bg)}
+.badge.fail{color:var(--fail);background:var(--fail-bg)}
+.badge.hang{color:var(--hang);background:var(--hang-bg)}
+.badge.off{color:var(--off);background:var(--off-bg)}
+.badge.tier{color:var(--ink-2);background:rgba(127,127,135,.13);font-weight:500;font-family:var(--mono);font-size:10.5px}
+
+/* ---------- buttons ---------- */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:26px;
+  padding:0 10px;border-radius:var(--r-ctl);border:.5px solid var(--line);background:var(--panel);
+  color:var(--ink);font:inherit;font-size:12.5px;font-weight:500;cursor:pointer;
+  box-shadow:var(--shadow-1);
+  transition-property:background-color,scale,border-color,color;transition-duration:110ms;
+  transition-timing-function:cubic-bezier(.2,0,0,1)}
+.btn:hover{background:var(--panel-2)}
+.btn:active{scale:.96}
+.btn.pri{background:var(--accent);border-color:transparent;color:var(--accent-ink)}
+.btn.pri:hover{filter:brightness(1.07)}
+.btn.danger{color:var(--fail);border-color:var(--line)}
+.btn.danger:hover{background:var(--fail-bg)}
+.btn.ghost{background:none;border-color:transparent;box-shadow:none;color:var(--ink-2)}
+.btn.ghost:hover{background:rgba(127,127,135,.14);color:var(--ink)}
+.btn.sm{min-height:22px;padding:0 7px;font-size:11.5px}
+.ibtn{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;
+  border:0;background:none;border-radius:var(--r-ctl);color:var(--ink-2);cursor:pointer;position:relative;
+  transition-property:background-color,color,scale;transition-duration:110ms}
+.ibtn::after{content:"";position:absolute;inset:-6px}
+.ibtn:hover{background:rgba(127,127,135,.14);color:var(--ink)}
+.ibtn:active{scale:.96}
+
+/* switch */
+.sw{appearance:none;width:34px;height:20px;border-radius:10px;background:rgba(127,127,135,.32);
+  position:relative;cursor:pointer;flex:0 0 auto;border:0;margin:0;
+  transition-property:background-color;transition-duration:160ms;transition-timing-function:cubic-bezier(.2,0,0,1)}
+.sw::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;
+  background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.28);
+  transition-property:translate;transition-duration:160ms;transition-timing-function:cubic-bezier(.2,0,0,1)}
+.sw:checked{background:var(--quiet)}
+.sw:checked::after{translate:14px 0}
+.sw:active::after{scale:.94}
+
+/* ---------- cards / panels ---------- */
+.card{background:var(--panel);border:.5px solid var(--line);border-radius:var(--r-panel);
+  box-shadow:var(--shadow-1)}
+.card.pad{padding:13px}
+.grid{display:grid;gap:11px}
+.g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+.g4{grid-template-columns:repeat(4,minmax(0,1fr))}
+.row{display:flex;align-items:center;gap:9px}
+.col{display:flex;flex-direction:column}
+.sec-h{display:flex;align-items:center;gap:8px;margin:20px 2px 9px}
+.sec-h:first-child{margin-top:2px}
+.sec-h h3{font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--ink-3)}
+.sec-h .ln{flex:1 1 auto;height:.5px;background:var(--line-soft)}
+.muted{color:var(--ink-3)}
+.dim{color:var(--ink-2)}
+.num{font-size:23px;font-weight:600;letter-spacing:-.022em;line-height:1.15}
+.lbl{font-size:11px;color:var(--ink-3);font-weight:500}
+
+/* banner */
+.banner{display:flex;align-items:center;gap:12px;padding:13px 14px;border-radius:var(--r-panel);
+  border:.5px solid var(--line)}
+.banner.ok{background:var(--quiet-bg);border-color:transparent}
+.banner.warn{background:var(--spoke-bg);border-color:transparent}
+.banner .ttl{font-size:14px;font-weight:600;letter-spacing:-.01em}
+.banner .ttl.ok{color:var(--quiet)}.banner .ttl.warn{color:var(--spoke)}
+.banner .ds{font-size:12px;color:var(--ink-2)}
+
+/* heat strip */
+.heat{display:flex;gap:2.5px}
+.heat i{width:9px;height:17px;border-radius:2.5px;background:var(--quiet-bg);display:block;
+  transition-property:scale;transition-duration:110ms}
+.heat i:hover{scale:1.22}
+.heat i.quiet{background:var(--quiet);opacity:.85}
+.heat i.spoke{background:var(--spoke)}
+.heat i.fail{background:var(--fail)}
+.heat i.hang{background:var(--hang)}
+.heat i.none{background:rgba(127,127,135,.17)}
+
+/* job table */
+.jt{width:100%;border-collapse:separate;border-spacing:0;font-size:12.5px}
+.jt th{text-align:left;font-size:11px;font-weight:600;color:var(--ink-3);letter-spacing:.03em;
+  text-transform:uppercase;padding:0 10px 7px;white-space:nowrap}
+.jt td{padding:9px 10px;border-top:.5px solid var(--line-soft);vertical-align:middle}
+.jt tbody tr{cursor:pointer;transition-property:background-color;transition-duration:100ms}
+.jt tbody tr:hover{background:var(--panel-2)}
+.jt tbody tr.sel{background:var(--accent-soft)}
+.jt .nm{font-weight:500;display:flex;align-items:center;gap:8px}
+.jt .nm code{font-family:var(--mono);font-size:11.5px;color:var(--ink-2)}
+.tbl-wrap{overflow-x:auto;border:.5px solid var(--line);border-radius:var(--r-panel);padding:11px;
+  background:var(--panel);box-shadow:var(--shadow-1)}
+
+/* 24h ribbon */
+.ribbon{position:relative;padding:22px 0 4px;margin:0 4px}
+.rb-track{position:relative;height:30px;background:var(--panel-2);border-radius:var(--r-card);
+  border:.5px solid var(--line-soft)}
+.rb-track+.rb-track{margin-top:7px}
+.rb-ticks{position:relative;height:16px;margin:0 0 5px}
+.rb-ticks span{position:absolute;top:0;font-size:10px;color:var(--ink-3);translate:-50% 0;font-weight:500}
+.rb-grid{position:absolute;inset:0;pointer-events:none}
+.rb-grid i{position:absolute;top:0;bottom:0;width:.5px;background:var(--line-soft)}
+.rb-blk{position:absolute;top:3px;bottom:3px;border-radius:5px;background:var(--accent);
+  color:#fff;font-size:10px;font-weight:600;display:flex;align-items:center;justify-content:center;padding:0 3px;
+  min-width:40px;overflow:hidden;white-space:nowrap;cursor:grab;
+  box-shadow:0 1px 3px rgba(0,0,0,.22);
+  transition-property:scale,filter;transition-duration:110ms}
+.rb-blk:hover{filter:brightness(1.1);scale:1.02}
+.rb-blk.b2{background:#7b3fb5}.rb-blk.b3{background:#17865a}.rb-blk.b4{background:#ab6100}
+.rb-lane{display:flex;align-items:center;gap:9px}
+.rb-name{width:132px;flex:0 0 132px;font-size:12px;font-weight:500;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.rb-wrap{flex:1 1 auto;min-width:0}
+.rb-now{position:absolute;top:-4px;bottom:-4px;width:1.5px;background:var(--fail);z-index:3}
+.rb-now::before{content:"";position:absolute;top:-3px;left:-2.5px;width:6.5px;height:6.5px;
+  border-radius:50%;background:var(--fail)}
+.rb-lane:not(:nth-child(2)) .rb-now::before{display:none}
+.rb-lane:not(:nth-child(2)) .rb-now{opacity:.45}
+
+/* log viewer */
+.logbar{display:flex;align-items:center;gap:7px;padding:9px 12px;border-bottom:.5px solid var(--line);
+  background:var(--panel-2);flex-wrap:wrap}
+.inp{height:26px;padding:0 9px;border-radius:var(--r-ctl);border:.5px solid var(--line);
+  background:var(--panel);color:var(--ink);font:inherit;font-size:12.5px;min-width:0;
+  transition-property:border-color,box-shadow;transition-duration:110ms}
+.inp:focus{outline:0;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+select.inp{cursor:pointer;padding-right:5px}
+.seg{display:inline-flex;background:rgba(127,127,135,.14);border-radius:7px;padding:2px;gap:2px}
+.seg button{min-height:22px;padding:0 9px;border:0;background:none;border-radius:5px;font:inherit;
+  font-size:11.5px;font-weight:500;color:var(--ink-2);cursor:pointer;
+  transition-property:background-color,color;transition-duration:110ms}
+.seg button:hover{color:var(--ink)}
+.seg button[aria-pressed=true]{background:var(--panel);color:var(--ink);box-shadow:var(--shadow-1)}
+.loglist{font-family:var(--mono);font-size:11.5px;line-height:1.62;padding:4px 0}
+.lg{display:flex;gap:10px;padding:1.5px 12px;border-left:2px solid transparent}
+.lg:hover{background:var(--panel-2)}
+.lg .t{color:var(--ink-3);flex:0 0 auto;font-size:11px}
+.lg .s{color:var(--ink-2);flex:0 0 auto;min-width:108px}
+.lg .m{color:var(--ink);overflow-wrap:anywhere}
+.lg.alert{border-left-color:var(--spoke);background:var(--spoke-bg)}
+.lg.alert .m{color:var(--spoke);font-weight:500}
+.lg.err{border-left-color:var(--fail);background:var(--fail-bg)}
+.lg.err .m{color:var(--fail);font-weight:500}
+.lg.head{border-left-color:var(--accent);background:var(--accent-soft);margin-top:5px}
+.lg.head .m{font-weight:600}
+.runsep{display:flex;align-items:center;gap:9px;padding:9px 12px 5px;font-size:11px;
+  color:var(--ink-3);font-weight:600;letter-spacing:.03em;text-transform:uppercase;font-family:inherit}
+.runsep .ln{flex:1;height:.5px;background:var(--line-soft)}
+
+/* detail drawer */
+.kv{display:grid;grid-template-columns:118px 1fr;gap:7px 12px;font-size:12.5px;align-items:baseline}
+.kv dt{color:var(--ink-3);font-size:11.5px}
+.kv dd{margin:0;overflow-wrap:anywhere}
+.src{font-family:var(--mono);font-size:11.5px;line-height:1.6;background:var(--panel-2);
+  border:.5px solid var(--line);border-radius:var(--r-card);padding:11px;overflow-x:auto;
+  color:var(--ink-2);white-space:pre;margin:0}
+.src b{color:var(--accent);font-weight:600}
+.pill{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px;border-radius:11px;
+  background:rgba(127,127,135,.14);font-size:11.5px;font-weight:500;color:var(--ink-2)}
+.pill .x{cursor:pointer;color:var(--ink-3);font-size:13px;line-height:1}
+.pill .x:hover{color:var(--fail)}
+
+/* modal */
+.scrim{position:fixed;inset:0;background:rgba(0,0,0,.34);backdrop-filter:blur(2px);z-index:50;
+  display:flex;align-items:center;justify-content:center;padding:22px}
+.modal{width:min(620px,100%);max-height:86vh;overflow-y:auto;background:var(--panel);
+  border-radius:12px;box-shadow:var(--shadow-2),0 0 0 .5px var(--line);padding:19px}
+.modal h3{font-size:16px;font-weight:600;letter-spacing:-.015em;margin-bottom:4px}
+.tpl{display:flex;gap:11px;align-items:flex-start;width:100%;text-align:left;padding:11px;
+  border-radius:var(--r-card);border:.5px solid var(--line);background:var(--panel);cursor:pointer;
+  font:inherit;color:var(--ink);
+  transition-property:border-color,background-color,scale;transition-duration:110ms}
+.tpl:hover{background:var(--panel-2)}
+.tpl:active{scale:.985}
+.tpl[aria-pressed=true]{border-color:var(--accent);background:var(--accent-soft)}
+.tpl .ti{width:30px;height:30px;flex:0 0 auto;border-radius:7px;background:rgba(127,127,135,.15);
+  display:flex;align-items:center;justify-content:center;color:var(--ink-2)}
+.tpl[aria-pressed=true] .ti{background:var(--accent);color:#fff}
+.tpl .tt{font-weight:600;font-size:13px}
+.tpl .td{font-size:11.5px;color:var(--ink-3);text-wrap:pretty}
+.field{display:flex;flex-direction:column;gap:5px;margin-top:11px}
+.field label{font-size:11.5px;font-weight:600;color:var(--ink-2)}
+.field .hint{font-size:11px;color:var(--ink-3);text-wrap:pretty}
+.note{display:flex;gap:9px;padding:10px 11px;border-radius:var(--r-card);background:var(--accent-soft);
+  font-size:11.5px;color:var(--ink-2);text-wrap:pretty}
+.note b{color:var(--ink)}
+.statusbar{display:flex;align-items:center;gap:10px;padding:0 13px;height:27px;flex:0 0 auto;
+  border-top:.5px solid var(--line);background:var(--side);font-size:11px;color:var(--ink-3)}
+@media(max-width:860px){
+  .shell{flex-direction:column}
+  .sidebar{width:auto;flex:0 0 auto;border-right:0;border-bottom:.5px solid var(--line)}
+  .g4,.g2{grid-template-columns:minmax(0,1fr)}
+  .rb-name{width:98px;flex-basis:98px}
+}
+</style>
+<style>
+/* ---------- scale components ---------- */
+.grp{margin-top:2px}
+.grp-h{display:flex;align-items:center;gap:7px;width:100%;min-height:28px;padding:0 8px;border:0;
+  background:none;color:var(--ink-2);font:inherit;font-size:11.5px;font-weight:600;cursor:pointer;
+  border-radius:var(--r-ctl);text-align:left;
+  transition-property:background-color,color;transition-duration:120ms}
+.grp-h:hover{background:rgba(127,127,135,.12);color:var(--ink)}
+.grp-h .chev{transition-property:rotate;transition-duration:160ms;
+  transition-timing-function:cubic-bezier(.2,0,0,1);color:var(--ink-3)}
+.grp-h[aria-expanded=false] .chev{rotate:-90deg}
+.grp-h .cnt{margin-left:auto;font-size:10.5px;color:var(--ink-3);font-weight:600}
+.grp-body{overflow:hidden}
+.sb-job{padding-left:22px}
+
+/* segmented status bar */
+.sbar{display:flex;height:6px;border-radius:3px;overflow:hidden;background:rgba(127,127,135,.16)}
+.sbar i{display:block;height:100%}
+.sbar i.quiet{background:var(--quiet)}.sbar i.spoke{background:var(--spoke)}
+.sbar i.fail{background:var(--fail)}.sbar i.hang{background:var(--hang)}
+.sbar i.off{background:var(--off);opacity:.55}.sbar i.none{background:rgba(127,127,135,.3)}
+
+/* filter chips */
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{display:inline-flex;align-items:center;gap:6px;min-height:26px;padding:0 10px;border-radius:13px;
+  border:.5px solid var(--line);background:var(--panel);color:var(--ink-2);font:inherit;font-size:12px;
+  font-weight:500;cursor:pointer;
+  transition-property:background-color,color,border-color,scale;transition-duration:110ms}
+.chip:hover{background:var(--panel-2);color:var(--ink)}
+.chip:active{scale:.96}
+.chip[aria-pressed=true]{background:var(--accent);border-color:transparent;color:#fff}
+.chip[aria-pressed=true] .dot{box-shadow:none}
+.chip .n{font-variant-numeric:tabular-nums;opacity:.75}
+
+/* bulk action bar */
+.bulk{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:9px;padding:9px 12px;
+  border-radius:var(--r-panel);background:var(--accent);color:#fff;box-shadow:var(--shadow-2);
+  margin-bottom:11px}
+.bulk .btn{background:rgba(255,255,255,.17);border-color:transparent;color:#fff;box-shadow:none}
+.bulk .btn:hover{background:rgba(255,255,255,.27)}
+
+/* fleet heatmap */
+.fleet{display:grid;gap:7px}
+.fleet-row{display:grid;grid-template-columns:148px 1fr;align-items:center;gap:10px}
+.fleet-name{font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink-2)}
+.fleet-cells{display:flex;gap:2px}
+.fleet-cells i{flex:1 1 0;min-width:0;height:13px;border-radius:2px;background:rgba(127,127,135,.17);
+  transition-property:scale;transition-duration:110ms}
+.fleet-cells i:hover{scale:1.5}
+.fleet-cells i.quiet{background:var(--quiet);opacity:.82}
+.fleet-cells i.spoke{background:var(--spoke)}.fleet-cells i.fail{background:var(--fail)}
+.fleet-cells i.hang{background:var(--hang)}.fleet-cells i.off{background:rgba(127,127,135,.26)}
+
+/* load histogram */
+.histo{display:flex;align-items:flex-end;gap:1px;height:92px;padding:0 1px}
+.histo i{flex:1 1 0;min-width:0;background:var(--accent);border-radius:2px 2px 0 0;opacity:.75;
+  transition-property:opacity,scale;transition-duration:110ms;min-height:2px}
+.histo i:hover{opacity:1}
+.histo i.hot{background:var(--spoke);opacity:.95}
+.histo i.crit{background:var(--fail);opacity:1}
+.histo-ax{display:flex;margin-top:5px;font-size:10px;color:var(--ink-3);font-weight:500}
+.histo-ax span{flex:1 1 0;text-align:left}
+
+/* command palette */
+.pal{width:min(600px,100%);background:var(--panel);border-radius:12px;overflow:hidden;
+  box-shadow:var(--shadow-2),0 0 0 .5px var(--line);margin-top:9vh;align-self:flex-start}
+.pal input{width:100%;height:48px;padding:0 16px;border:0;border-bottom:.5px solid var(--line);
+  background:none;color:var(--ink);font:inherit;font-size:15px}
+.pal input:focus{outline:0}
+.pal-list{max-height:52vh;overflow-y:auto;padding:6px}
+.pal-item{display:flex;align-items:center;gap:9px;width:100%;min-height:36px;padding:0 10px;border:0;
+  background:none;border-radius:var(--r-ctl);color:var(--ink);font:inherit;font-size:13px;text-align:left;
+  cursor:pointer;transition-property:background-color;transition-duration:90ms}
+.pal-item:hover,.pal-item.on{background:var(--accent-soft)}
+.pal-item .g{margin-left:auto;font-size:11px;color:var(--ink-3)}
+.kbd{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 4px;
+  border-radius:4px;background:rgba(127,127,135,.17);font-size:10.5px;font-weight:600;color:var(--ink-3);
+  font-family:var(--mono)}
+
+/* compact table additions */
+.jt td.c{padding:6px 10px}
+.jt .mini{font-size:11px;color:var(--ink-3)}
+.jt tbody tr.pick{background:var(--accent-soft)}
+.gh-row td{background:var(--panel-2);font-size:11px;font-weight:600;letter-spacing:.04em;
+  text-transform:uppercase;color:var(--ink-3);padding:6px 10px}
+.empty{display:flex;flex-direction:column;align-items:center;gap:7px;padding:44px 16px;text-align:center}
+.empty .t{font-weight:600;font-size:13.5px}
+.trunc{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+</style>
+
+<div class="win">
+  <div class="titlebar">
+    <div class="lights"><i></i><i></i><i></i></div>
+    <div class="tb-title" style="margin-left:4px">machine-ops <span>console</span></div>
+    <div class="tb-right">
+      <button class="btn sm ghost" id="btn-pal"><span class="kbd">⌘</span><span class="kbd">K</span>&nbsp;Jump to…</button>
+      <span id="tb-status"></span>
+      <button class="ibtn" id="btn-theme" title="Toggle appearance"></button>
+    </div>
+  </div>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="nav-label">Console</div>
+      <div id="nav"></div>
+      <div class="nav-label">Views</div>
+      <div id="nav-views"></div>
+      <div class="nav-label">Groups</div>
+      <div id="nav-groups"></div>
+      <button class="nav-item" id="btn-add" style="margin-top:8px;color:var(--accent)">
+        <span class="ic" id="add-ic"></span>New automation
+      </button>
+    </aside>
+    <main class="main">
+      <div class="toolbar" id="toolbar"></div>
+      <div class="scroll" id="view"></div>
+      <div class="statusbar" id="statusbar"></div>
+    </main>
+  </div>
+</div>
+<div id="layer"></div>
+
+<script type="text/plain" id="rawlog">
+2026-10-20 01:00:02 [restic-daily] added=1.2G snapshots=186 rc=0 dry_run=0
+2026-10-20 01:45:01 [borg-weekly] start archive host=studio repo=/Volumes/Archive
+2026-10-20 02:00:06 [run] start tier=daily dry_run=0
+2026-10-20 02:00:23 [mole-optimize] score 94->94 disk 63G->63G applied=3 rc=0 dry_run=0
+2026-10-20 02:05:55 [mole-clean] reclaimed=unknown items=14 items rc=0 dry_run=0
+2026-10-20 02:10:04 [disk-audit] free=63G threshold=15G rc=0 dry_run=0
+2026-10-20 02:20:02 [brew-update] held (outdated but never auto-upgraded): mole node tor
+2026-10-20 02:20:13 [brew-update] upgrade output tail: ==> Upgraded 4 requested outdated packages;gitea 28.1.0 -> 28.2.0;
+2026-10-20 02:20:14 [brew-update] upgraded=0 held=3 casks_outdated=5 cleanup=skipped rc=1 dry_run=0
+2026-10-20 02:20:14 [30-brew-update.sh stdout] == brew-update ==
+2026-10-20 02:20:14 [30-brew-update.sh stdout] [brew-update] brew upgrade exited rc=1 (dry_run=0)
+2026-10-20 02:45:11 [npm-global-audit] packages=13 outdated=4 report-only rc=0 dry_run=0
+2026-10-20 02:55:22 [skills-update] skills=9 updated=none added=none removed=none rc=0 dry_run=0
+2026-10-20 02:45:01 [borg-weekly] TIMED OUT after 7200s (pid 48122 pgid 48122); capturing stuck-tree diagnostics
+2026-10-20 02:45:02 [borg-weekly] stuck-tree: 48140 48122 02:00:01 00:04:12 S+ borg create --stats
+2026-10-20 02:45:08 [borg-weekly] process group 48122 killed
+2026-10-20 02:45:08 [62-borg-weekly.sh stdout] == borg-weekly ==
+2026-10-20 02:45:08 [62-borg-weekly.sh stdout] [TIMED OUT after 7200s limit; process group killed]
+2026-10-20 03:00:12 [timemachine-check] last backup 4d ago (threshold 2d) rc=0 dry_run=0
+2026-10-20 03:00:12 [13-timemachine-check.sh stdout] == timemachine-check ==
+2026-10-20 03:00:12 [13-timemachine-check.sh stdout] [timemachine-check] last backup 4d ago, threshold 2d
+2026-10-20 06:00:04 [dotfiles-reconcile] drift detected in 2 files rc=1 dry_run=0
+2026-10-20 06:00:04 [55-dotfiles-reconcile.sh stdout] == dotfiles-reconcile ==
+2026-10-20 06:00:04 [55-dotfiles-reconcile.sh stdout] drift: ~/.zshrc ~/.gitconfig
+2026-10-20 08:00:07 [cert-expiry] 1 cert expires in 12d rc=0 dry_run=0
+2026-10-20 08:00:07 [81-cert-expiry.sh stdout] == cert-expiry ==
+2026-10-20 08:00:07 [81-cert-expiry.sh stdout] api.internal expires 2026-11-01 (12d)
+2026-10-20 12:00:03 [screenshot-tidy] moved=23 rc=0 dry_run=0
+2026-10-20 12:00:03 [run] finish tier=daily jobs=38 speaking=5
+</script>
+
+<script>
+const I = (d, w=15) => `<svg width="${w}" height="${w}" viewBox="0 0 24 24" fill="none"
+  stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+const IC = {
+  overview: I('<rect x="3" y="3" width="7.5" height="7.5" rx="1.6"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.6"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.6"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.6"/>'),
+  jobs: I('<path d="M8 6h13M8 12h13M8 18h13"/><circle cx="3.5" cy="6" r="1.2"/><circle cx="3.5" cy="12" r="1.2"/><circle cx="3.5" cy="18" r="1.2"/>'),
+  schedule: I('<circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3.2 2"/>'),
+  logs: I('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h4"/>'),
+  settings: I('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 7 19.4a1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 3 14.1H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.6 7a1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 10 3.6V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0 1.2 2.9H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>'),
+  play: I('<path d="M7 4.8v14.4a.8.8 0 0 0 1.2.7l11-7.2a.8.8 0 0 0 0-1.4l-11-7.2A.8.8 0 0 0 7 4.8z"/>', 13),
+  flask: I('<path d="M9 3h6M10 3v5.2L4.8 17A2.6 2.6 0 0 0 7 21h10a2.6 2.6 0 0 0 2.2-4L14 8.2V3"/><path d="M7.2 14h9.6"/>', 13),
+  plus: I('<path d="M12 5v14M5 12h14"/>'),
+  trash: I('<path d="M4 7h16M9.5 7V4.8A.8.8 0 0 1 10.3 4h3.4a.8.8 0 0 1 .8.8V7M6.5 7l.8 12.2a1.8 1.8 0 0 0 1.8 1.7h5.8a1.8 1.8 0 0 0 1.8-1.7L17.5 7"/>', 13),
+  bell: I('<path d="M18 8a6 6 0 1 0-12 0c0 7-2.5 8-2.5 8h17S18 15 18 8"/><path d="M13.7 20a2 2 0 0 1-3.4 0"/>', 12),
+  moon: I('<path d="M20.5 14.3A8.6 8.6 0 0 1 9.7 3.5a8.6 8.6 0 1 0 10.8 10.8z"/>'),
+  sun: I('<circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4"/>'),
+  back: I('<path d="M15 5l-7 7 7 7"/>', 14),
+  chev: I('<path d="M6 9l6 6 6-6"/>', 13),
+  refresh: I('<path d="M20.5 12a8.5 8.5 0 1 1-2.6-6.1"/><path d="M20.5 4.5V10h-5.3"/>', 13),
+  warn: I('<path d="M12 3.6 2.6 19.4a1 1 0 0 0 .9 1.5h17a1 1 0 0 0 .9-1.5z"/><path d="M12 9.5v5M12 17.4h.01"/>', 18),
+  check: I('<circle cx="12" cy="12" r="9"/><path d="M8.2 12.3l2.6 2.6 5-5.4"/>', 18),
+  edit: I('<path d="M4 20h4L20 8a2.4 2.4 0 0 0-3.4-3.4L4.6 16.6z"/>', 13),
+  shield: I('<path d="M12 3.2 4.8 6v5.6c0 4.2 3 7.6 7.2 9.2 4.2-1.6 7.2-5 7.2-9.2V6z"/><path d="M9.3 12.2l1.9 1.9 3.6-3.9"/>', 13),
+  search: I('<circle cx="11" cy="11" r="6.4"/><path d="M15.8 15.8L21 21"/>', 14),
+  stagger: I('<path d="M4 7h7M4 12h13M4 17h9"/>', 14),
+  mole: I('<path d="M12 3.5c-4.4 0-8 3.3-8 7.4 0 2.6 1.4 4.9 3.6 6.2L7 20.5h10l-.6-3.4c2.2-1.3 3.6-3.6 3.6-6.2 0-4.1-3.6-7.4-8-7.4z"/><circle cx="9.3" cy="11" r="1"/><circle cx="14.7" cy="11" r="1"/>', 14),
+  pkg: I('<path d="M21 8.5v7a1.8 1.8 0 0 1-.9 1.6l-7.2 4a1.8 1.8 0 0 1-1.8 0l-7.2-4A1.8 1.8 0 0 1 3 15.5v-7a1.8 1.8 0 0 1 .9-1.6l7.2-4a1.8 1.8 0 0 1 1.8 0l7.2 4A1.8 1.8 0 0 1 21 8.5z"/><path d="M3.3 7.6l8.7 4.9 8.7-4.9M12 21v-8.5"/>', 14),
+  py: I('<path d="M12 3h-2.5A2.5 2.5 0 0 0 7 5.5V9h7v2.5H5.5A2.5 2.5 0 0 0 3 14v2.5A2.5 2.5 0 0 0 5.5 19H7"/><path d="M12 21h2.5a2.5 2.5 0 0 0 2.5-2.5V15h-7v-2.5h8.5A2.5 2.5 0 0 0 21 10V7.5A2.5 2.5 0 0 0 18.5 5H17"/>', 14),
+  sh: I('<rect x="3" y="4" width="18" height="16" rx="2.2"/><path d="M7.5 9.5l2.6 2.5-2.6 2.5M12.8 15h3.7"/>', 14),
+};
+
+/* ===== 38 automations across 6 groups =====
+   [num, slug, title, group, kind, schedule, timeout, status, durSec, summary] */
+const GROUPS = [
+  ['system','System',  'mole'], ['pkg','Package managers','pkg'], ['dev','Developer','sh'],
+  ['backup','Backups', 'sh'],   ['scripts','Scripts',      'py'], ['net','Network & security','shield'],
+];
+const RAW = [
+[10,'mole-optimize','Mole optimize','system','mole','02:00',900,'quiet',18,'score 94->94 disk 63G->63G applied=3 rc=0'],
+[11,'mole-clean','Mole clean','system','mole','02:05',900,'quiet',91,'reclaimed=unknown items=14 rc=0'],
+[12,'disk-audit','Disk space audit','system','sh','02:10',300,'quiet',6,'free=63G threshold=15G rc=0'],
+[13,'timemachine-check','Time Machine check','system','sh','03:00',600,'spoke',12,'last backup 4d ago (threshold 2d) rc=0'],
+[14,'log-rotate','System log rotate','system','sh','04:00',300,'quiet',3,'rotated=2 pruned=180MB rc=0'],
+[15,'font-cache','Font cache rebuild','system','sh','w:Sun 03:30',600,'quiet',22,'rebuilt=1 rc=0'],
+[16,'spotlight-audit','Spotlight index audit','system','sh','04:10',900,'quiet',31,'volumes=2 indexed=2 rc=0'],
+[30,'brew-update','Homebrew formulae','pkg','pkg','02:20',3600,'spoke',19,'upgraded=0 held=3 casks_outdated=5 rc=1'],
+[31,'brew-cask-report','Homebrew casks (report)','pkg','pkg','02:40',900,'quiet',11,'outdated=5 upgraded=0 report-only rc=0'],
+[32,'npm-global-audit','npm globals audit','pkg','pkg','02:45',900,'quiet',14,'packages=13 outdated=4 report-only rc=0'],
+[33,'pipx-update','pipx packages','pkg','pkg','02:50',1200,'quiet',27,'upgraded=1 rc=0'],
+[34,'cargo-update','cargo installs','pkg','pkg','03:10',2400,'quiet',64,'upgraded=0 rc=0'],
+[35,'rustup-update','rustup toolchains','pkg','pkg','03:20',1800,'quiet',41,'stable unchanged rc=0'],
+[36,'gem-update','RubyGems','pkg','pkg','03:25',1200,'off',0,'disabled 2026-09-30'],
+[37,'go-install-update','Go tools','pkg','pkg','03:30',1800,'quiet',38,'tools=6 upgraded=1 rc=0'],
+[38,'uv-tool-update','uv tools','pkg','pkg','03:35',900,'quiet',9,'tools=4 upgraded=0 rc=0'],
+[40,'skills-update','Skills CLI','pkg','pkg','02:55',900,'quiet',8,'skills=9 updated=none rc=0'],
+[50,'git-repo-gc','Git repo gc','dev','sh','w:Sun 05:00',3600,'quiet',142,'repos=23 gc=23 saved=1.1G rc=0'],
+[51,'docker-prune','Docker prune','dev','sh','05:20',1800,'off',0,'disabled 2026-10-02'],
+[52,'xcode-derived','Xcode DerivedData','dev','sh','05:25',900,'quiet',17,'removed=3.4G rc=0'],
+[53,'node-modules-sweep','node_modules sweep','dev','sh','w:Sun 05:30',3600,'quiet',203,'stale=11 removed=6.2G rc=0'],
+[54,'venv-prune','Stale venv prune','dev','py','05:40',900,'quiet',12,'venvs=18 pruned=2 rc=0'],
+[55,'dotfiles-reconcile','Dotfiles reconcile','dev','py','06:00',600,'fail',4,'drift detected in 2 files rc=1'],
+[60,'restic-daily','Restic snapshot','backup','sh','01:00',7200,'quiet',412,'added=1.2G snapshots=186 rc=0'],
+[61,'restic-check','Restic integrity','backup','sh','w:Sun 01:30',7200,'quiet',688,'no errors rc=0'],
+[62,'borg-weekly','Borg archive','backup','sh','w:Mon 01:45',7200,'hang',7200,'TIMED OUT after 7200s'],
+[63,'photos-export','Photos export','backup','py','23:30',3600,'quiet',221,'exported=48 rc=0'],
+[64,'db-dump','Postgres dump','backup','sh','23:50',1800,'quiet',46,'dbs=3 size=890MB rc=0'],
+[70,'expense-parse','Expense parser','scripts','py','07:00',600,'quiet',11,'parsed=12 rc=0'],
+[71,'rss-digest','RSS digest','scripts','py','07:10',600,'quiet',8,'items=94 sent=1 rc=0'],
+[72,'invoice-fetch','Invoice fetch','scripts','py','07:20',900,'quiet',19,'invoices=3 rc=0'],
+[73,'ledger-sync','Ledger sync','scripts','py','07:30',900,'none',0,'never run'],
+[74,'screenshot-tidy','Screenshot tidy','scripts','py','12:00',300,'quiet',4,'moved=23 rc=0'],
+[80,'tor-check','Tor gateway check','net','sh','i:6',300,'quiet',5,'circuit ok latency=240ms rc=0'],
+[81,'cert-expiry','TLS cert expiry','net','py','08:00',600,'spoke',7,'1 cert expires in 12d rc=0'],
+[82,'ssh-key-audit','SSH key audit','net','sh','w:Sun 08:10',600,'quiet',6,'keys=4 all ed25519 rc=0'],
+[83,'firewall-audit','Firewall audit','net','sh','08:20',600,'off',0,'disabled 2026-08-14'],
+];
+
+const NOW = new Date('2026-10-20T14:32:00');
+const DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+
+// Deterministic pseudo-random so the 30-day history is stable across renders.
+let _s = 7;
+const rnd = () => (_s = (_s * 1103515245 + 12345) % 2147483648) / 2147483648;
+
+let JOBS = RAW.map(([n, slug, title, grp, kind, sched, timeout, status, dur, summary]) => {
+  const enabled = status !== 'off';
+  let schedule;
+  if (sched.startsWith('w:')) { const [d, t] = sched.slice(2).split(' '); schedule = {mode:'weekly', days:[d], times:[t]}; }
+  else if (sched.startsWith('i:')) schedule = {mode:'interval', everyHours:Number(sched.slice(2)), times:[], days:[]};
+  else schedule = {mode:'daily', times:[sched], days:[]};
+  const history = Array.from({length:30}, (_, i) => {
+    if (!enabled) return 'off';
+    if (i === 29) return status;
+    const r = rnd();
+    if (status === 'none') return 'none';
+    if (r > .96) return 'spoke';
+    if (r > .945) return 'fail';
+    if (r > .94) return 'none';
+    return 'quiet';
+  });
+  return { file:`${n}-${slug}.sh`, label:slug, title, group:grp, kind, tier:schedule.mode==='weekly'?'weekly':'daily',
+    timeout, enabled, schedule, history,
+    last:{ ts:'2026-10-20', status, dur, rc: status==='fail'?1:status==='hang'?124:status==='spoke'?1:0, summary } };
+});
+
+const STATUS = {
+  quiet:{t:'Quiet', d:'Ran and said nothing — the healthy state'},
+  spoke:{t:'Spoke', d:'Surfaced an alert on stdout'},
+  fail:{t:'Failed', d:'Exited non-zero'},
+  hang:{t:'Timed out', d:'Exceeded its timeout; process group killed'},
+  off:{t:'Disabled', d:'Skipped by console state'},
+  none:{t:'Not run', d:'No run recorded'},
+};
+const ATTN = ['spoke','fail','hang'];
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+/* ============ log parsing ============ */
+const LOG = document.getElementById('rawlog').textContent.trim().split('\n').map(l => {
+  const m = l.match(/^(\d{4}-\d\d-\d\d) (\d\d:\d\d:\d\d) \[([^\]]+)\] (.*)$/);
+  if (!m) return null;
+  const [, date, time, src, msg] = m;
+  let sev = 'info';
+  const rcs = [...msg.matchAll(/\brc=(\d+)/g)];
+  const lastRc = rcs.length ? Number(rcs[rcs.length - 1][1]) : 0;
+  if (lastRc !== 0 || /TIMED OUT|WARNING/.test(msg)) sev = 'err';
+  if (/log-only/.test(msg)) sev = 'info';
+  if (src.endsWith('stdout')) sev = 'alert';
+  if (/^(start|finish) tier=/.test(msg)) sev = 'head';
+  return { date, time, src, msg, sev };
+}).filter(Boolean);
+
+/* ============ helpers ============ */
+const fmtDur = s => s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s/60)}m ${s%60}s` : `${Math.floor(s/3600)}h ${Math.floor(s%3600/60)}m`;
+const grpOf = k => GROUPS.find(g => g[0] === k);
+function nextRun(j) {
+  if (!j.enabled) return null;
+  const s = j.schedule;
+  if (s.mode === 'interval') return new Date(NOW.getTime() + s.everyHours*3600*1000);
+  const cand = [];
+  for (let day = 0; day < 9; day++) for (const t of s.times) {
+    const [hh, mm] = t.split(':').map(Number);
+    const d = new Date(NOW); d.setDate(d.getDate()+day); d.setHours(hh, mm, 0, 0);
+    if (d <= NOW) continue;
+    if (s.mode === 'weekly' && !s.days.includes(DAYS[(d.getDay()+6)%7])) continue;
+    cand.push(d);
+  }
+  return cand.sort((a,b)=>a-b)[0] ?? null;
+}
+const untilStr = d => {
+  if (!d) return '—';
+  const mins = Math.round((d - NOW)/60000), h = Math.floor(mins/60);
+  return h >= 24 ? `in ${Math.floor(h/24)}d ${h%24}h` : h ? `in ${h}h ${mins%60}m` : `in ${mins}m`;
+};
+const schedText = j => {
+  const s = j.schedule;
+  if (s.mode === 'interval') return `Every ${s.everyHours}h`;
+  if (s.mode === 'weekly') return `${s.days.join(', ')} ${s.times.join(', ')}`;
+  return `Daily ${s.times.join(', ')}`;
+};
+const counts = list => list.reduce((a, j) => {
+  const k = j.enabled ? j.last.status : 'off'; a[k] = (a[k]||0)+1; return a; }, {});
+const sbar = list => {
+  const c = counts(list), n = list.length || 1;
+  return `<div class="sbar">${['quiet','spoke','fail','hang','none','off']
+    .filter(k=>c[k]).map(k=>`<i class="${k}" style="width:${c[k]/n*100}%" title="${c[k]} ${STATUS[k].t}"></i>`).join('')}</div>`;
+};
+
+/* ============ app state ============ */
+let view='overview', selected=null, savedView='all', groupFilter=null,
+    q='', statusF=new Set(), picked=new Set(), collapsed=new Set(),
+    logFilter='all', logQuery='', logGroup=true, palOpen=false, palQ='', groupBy='group';
+const $ = s => document.querySelector(s);
+const layer = $('#layer');
+const attnJobs = () => JOBS.filter(j => j.enabled && ATTN.includes(j.last.status));
+
+const VIEWS = {
+  all:        ['All automations',  () => JOBS],
+  attention:  ['Needs attention',  () => attnJobs()],
+  disabled:   ['Disabled',         () => JOBS.filter(j => !j.enabled)],
+  never:      ['Never run',        () => JOBS.filter(j => j.last.status === 'none')],
+  slow:       ['Slowest',          () => [...JOBS].filter(j=>j.enabled).sort((a,b)=>b.last.dur-a.last.dur).slice(0,10)],
+  due:        ['Due next',         () => [...JOBS].filter(j=>j.enabled&&nextRun(j)).sort((a,b)=>nextRun(a)-nextRun(b)).slice(0,10)],
+};
+function visible() {
+  let list = VIEWS[savedView][1]();
+  if (groupFilter) list = list.filter(j => j.group === groupFilter);
+  if (statusF.size) list = list.filter(j => statusF.has(j.enabled ? j.last.status : 'off'));
+  if (q) { const s = q.toLowerCase();
+    list = list.filter(j => (j.title+j.file+j.label+j.last.summary+j.group).toLowerCase().includes(s)); }
+  return list;
+}
+function go(v, sel) { view = v; if (sel !== undefined) selected = sel; picked.clear(); render(); $('#view').scrollTop = 0; }
+
+/* ============ chrome ============ */
+function renderChrome() {
+  const n = attnJobs().length;
+  $('#tb-status').innerHTML = n
+    ? `<span class="badge spoke">${IC.bell} ${n} need review</span>`
+    : `<span class="badge quiet">All quiet</span>`;
+  $('#btn-theme').innerHTML = document.documentElement.dataset.theme === 'dark' ? IC.sun : IC.moon;
+  $('#add-ic').innerHTML = IC.plus;
+
+  $('#nav').innerHTML = [['overview','Overview'],['jobs','Automations'],['schedule','Schedule'],
+    ['logs','Logs'],['settings','Settings']].map(([k,t]) => `
+    <button class="nav-item" aria-current="${view===k}" data-nav="${k}">
+      <span class="ic">${IC[k]}</span>${t}
+      ${k==='jobs' ? `<span class="cnt">${JOBS.length}</span>` : ''}</button>`).join('');
+
+  $('#nav-views').innerHTML = Object.entries(VIEWS).map(([k,[label,fn]]) => {
+    const c = fn().length;
+    return `<button class="nav-item" aria-current="${view==='jobs'&&savedView===k&&!groupFilter}"
+      data-view="${k}" style="min-height:27px;font-size:12.5px">
+      ${k==='attention'&&c?`<span class="dot spoke"></span>`:`<span style="width:8px"></span>`}
+      ${label}<span class="cnt">${c}</span></button>`;
+  }).join('');
+
+  $('#nav-groups').innerHTML = GROUPS.map(([k,label,ic]) => {
+    const list = JOBS.filter(j => j.group === k);
+    const bad = list.filter(j => j.enabled && ATTN.includes(j.last.status)).length;
+    const open = !collapsed.has(k);
+    return `<div class="grp">
+      <button class="grp-h" aria-expanded="${open}" data-grp="${k}">
+        <span class="chev">${IC.chev}</span>
+        <span class="trunc">${label}</span>
+        ${bad?`<span class="dot spoke"></span>`:''}
+        <span class="cnt">${list.length}</span></button>
+      <div class="grp-body" ${open?'':'hidden'}>
+        ${open ? list.map(j => `
+          <button class="sb-job ${selected===j.file&&view==='detail'?'sel':''} ${j.enabled?'':'dis'}" data-job="${j.file}">
+            <span class="dot ${j.enabled?j.last.status:'off'}"></span>
+            <span class="nm trunc">${esc(j.title)}</span></button>`).join('') : ''}
+      </div></div>`;
+  }).join('');
+
+  const sweep = JOBS.filter(j=>j.enabled).reduce((a,j)=>a+j.last.dur,0);
+  $('#statusbar').innerHTML = `
+    <span>${JOBS.filter(j=>j.enabled).length} of ${JOBS.length} enabled</span><span>·</span>
+    <span>${GROUPS.length} groups</span><span>·</span>
+    <span>total runtime ${fmtDur(sweep)}/day</span>
+    <span style="margin-left:auto" class="mono">~/projects/machine-ops</span>`;
+}
+
+/* ============ view: overview (exception-first) ============ */
+function vOverview() {
+  const attn = attnJobs(), c = counts(JOBS);
+  const nextUp = [...JOBS].filter(j=>j.enabled&&nextRun(j)).sort((a,b)=>nextRun(a)-nextRun(b)).slice(0,5);
+  const sweep = JOBS.filter(j=>j.enabled).reduce((a,j)=>a+j.last.dur,0);
+
+  return `
+  <div class="banner ${attn.length?'warn':'ok'}">
+    <span style="color:var(--${attn.length?'spoke':'quiet'})">${attn.length?IC.warn:IC.check}</span>
+    <div class="col" style="gap:1px">
+      <div class="ttl ${attn.length?'warn':'ok'}">${attn.length
+        ? `${attn.length} of ${JOBS.filter(j=>j.enabled).length} automations need review`
+        : 'All quiet'}</div>
+      <div class="ds">${attn.length
+        ? `The other ${JOBS.filter(j=>j.enabled).length-attn.length} ran and said nothing. Only these are listed.`
+        : `Every automation ran and said nothing. That is the success signal.`}</div>
+    </div>
+    ${attn.length?`<button class="btn pri" style="margin-left:auto" data-view="attention">Review all</button>`:''}
+  </div>
+
+  <div class="grid g4" style="margin-top:12px">
+    ${[['Automations', JOBS.length, `${JOBS.filter(j=>j.enabled).length} enabled · ${c.off||0} off`],
+       ['Quiet last run', c.quiet||0, `${Math.round((c.quiet||0)/JOBS.length*100)}% of the fleet`],
+       ['Need review', attn.length, attn.length?'spoke, failed or timed out':'nothing outstanding'],
+       ['Daily runtime', fmtDur(sweep), 'sum of last durations']
+      ].map(([l,v,s])=>`<div class="card pad col" style="gap:3px">
+        <div class="lbl">${l}</div><div class="num">${v}</div>
+        <div class="muted" style="font-size:11px">${s}</div></div>`).join('')}
+  </div>
+
+  ${attn.length ? `
+  <div class="sec-h"><h3>Needs attention</h3><span class="ln"></span>
+    <span class="muted" style="font-size:11px">${attn.length} shown · everything else is quiet</span></div>
+  <div class="card" style="overflow:hidden">
+    ${attn.map((j,i)=>`
+      <div class="row" style="padding:10px 13px;${i?'border-top:.5px solid var(--line-soft)':''};cursor:pointer"
+           data-open="${j.file}">
+        <span class="dot ${j.last.status}"></span>
+        <div class="col" style="gap:1px;min-width:0;flex:1 1 auto">
+          <div class="row" style="gap:7px">
+            <span style="font-weight:600;font-size:12.5px">${esc(j.title)}</span>
+            <span class="badge ${j.last.status}">${STATUS[j.last.status].t}</span>
+            <span class="muted" style="font-size:11px">${esc(grpOf(j.group)[1])}</span>
+          </div>
+          <div class="mono dim trunc" style="font-size:11px">${esc(j.last.summary)}</div>
+        </div>
+        <div class="row" style="gap:5px;flex:0 0 auto">
+          <button class="ibtn" data-run="${j.file}" title="Run now">${IC.play}</button>
+          <button class="ibtn" data-open="${j.file}" title="Configure">${IC.edit}</button>
+        </div>
+      </div>`).join('')}
+  </div>` : ''}
+
+  <div class="sec-h"><h3>Groups</h3><span class="ln"></span>
+    <button class="btn sm ghost" data-nav="jobs">Open all</button></div>
+  <div class="grid g2">
+    ${GROUPS.map(([k,label,ic])=>{
+      const list = JOBS.filter(j=>j.group===k);
+      const bad = list.filter(j=>j.enabled&&ATTN.includes(j.last.status));
+      const nxt = list.filter(j=>j.enabled&&nextRun(j)).sort((a,b)=>nextRun(a)-nextRun(b))[0];
+      return `<div class="card pad col" style="gap:9px" role="button" tabindex="0" data-grpopen="${k}">
+        <div class="row">
+          <span style="color:var(--ink-2)">${IC[ic]||IC.sh}</span>
+          <span style="font-weight:600;letter-spacing:-.01em">${label}</span>
+          <span class="badge ${bad.length?'spoke':'quiet'}" style="margin-left:auto">
+            ${bad.length?`${bad.length} to review`:'all quiet'}</span>
+        </div>
+        ${sbar(list)}
+        <div class="row muted" style="font-size:11px">
+          <span>${list.length} automations · ${list.filter(j=>j.enabled).length} enabled</span>
+          <span style="margin-left:auto">${nxt?`next ${untilStr(nextRun(nxt))}`:'none scheduled'}</span>
+        </div>
+      </div>`;
+    }).join('')}
+  </div>
+
+  <div class="sec-h"><h3>Fleet health — last 30 days</h3><span class="ln"></span>
+    <div class="row muted" style="font-size:11px;gap:11px">
+      ${['quiet','spoke','fail','hang','off'].map(k=>
+        `<span class="row" style="gap:5px"><span class="dot ${k}"></span>${STATUS[k].t}</span>`).join('')}
+    </div></div>
+  <div class="card pad">
+    <div class="fleet">
+      ${GROUPS.map(([k,label])=>{
+        const list = JOBS.filter(j=>j.group===k);
+        const days = Array.from({length:30},(_,d)=>{
+          const st = list.map(j=>j.history[d]);
+          return st.includes('hang')?'hang':st.includes('fail')?'fail':st.includes('spoke')?'spoke'
+            :st.includes('quiet')?'quiet':'off';
+        });
+        return `<div class="fleet-row">
+          <div class="fleet-name">${label}</div>
+          <div class="fleet-cells">${days.map((s,d)=>
+            `<i class="${s}" title="${label} · ${30-d}d ago — ${STATUS[s].t}"></i>`).join('')}</div>
+        </div>`;
+      }).join('')}
+    </div>
+    <div class="muted" style="font-size:11px;margin-top:10px">
+      Rolled up by group — a day is coloured by its worst outcome. Open a group to see per-automation rows.
+    </div>
+  </div>
+
+  <div class="sec-h"><h3>Up next</h3><span class="ln"></span>
+    <button class="btn sm ghost" data-nav="schedule">Schedule</button></div>
+  <div class="card" style="overflow:hidden">
+    ${nextUp.map((j,i)=>`
+      <div class="row" style="padding:9px 13px;${i?'border-top:.5px solid var(--line-soft)':''};cursor:pointer"
+           data-open="${j.file}">
+        <span class="dot ${j.last.status}"></span>
+        <span style="font-size:12.5px;font-weight:500;min-width:0" class="trunc">${esc(j.title)}</span>
+        <span class="muted" style="font-size:11px">${esc(grpOf(j.group)[1])}</span>
+        <span class="muted mono" style="font-size:11px;margin-left:auto">${esc(schedText(j))}</span>
+        <span style="font-size:11.5px;font-weight:600;min-width:72px;text-align:right">${untilStr(nextRun(j))}</span>
+      </div>`).join('')}
+  </div>`;
+}
+
+/* ============ view: automations (dense, searchable, bulk) ============ */
+function vJobs() {
+  const list = visible();
+  const byGroup = groupBy === 'group';
+  const buckets = byGroup
+    ? GROUPS.map(([k,label]) => [label, list.filter(j=>j.group===k)]).filter(b=>b[1].length)
+    : [[null, list]];
+
+  const row = j => {
+    const st = j.enabled ? j.last.status : 'off';
+    return `<tr data-open="${j.file}" class="${picked.has(j.file)?'pick':''}">
+      <td class="c" style="width:28px"><input type="checkbox" data-pick="${j.file}"
+        ${picked.has(j.file)?'checked':''} onclick="event.stopPropagation()"></td>
+      <td class="c"><span class="dot ${st}" title="${STATUS[st].t}"></span></td>
+      <td class="c" style="min-width:190px">
+        <div class="nm trunc">${esc(j.title)}</div>
+        <code class="mini">${esc(j.file)}</code></td>
+      <td class="c mini">${esc(grpOf(j.group)[1])}</td>
+      <td class="c mono" style="font-size:11.5px">${esc(schedText(j))}</td>
+      <td class="c" style="white-space:nowrap">${j.enabled?untilStr(nextRun(j)):'<span class="muted">—</span>'}</td>
+      <td class="c">${j.last.dur?fmtDur(j.last.dur):'<span class="muted">—</span>'}
+        <div class="mini">${j.timeout}s cap</div></td>
+      <td class="c" style="max-width:220px"><div class="mono trunc" style="font-size:11px"
+        title="${esc(j.last.summary)}">${esc(j.last.summary)}</div></td>
+      <td class="c"><span class="badge ${st}">${STATUS[st].t}</span></td>
+      <td class="c"><div class="row" style="gap:2px;justify-content:flex-end">
+        <button class="ibtn" data-run="${j.file}" title="Run now">${IC.play}</button>
+        <button class="ibtn" data-dry="${j.file}" title="Dry run">${IC.flask}</button>
+        <button class="ibtn" data-del="${j.file}" title="Delete">${IC.trash}</button>
+      </div></td></tr>`;
+  };
+
+  return `
+  ${picked.size ? `
+  <div class="bulk">
+    <span style="font-weight:600;font-size:12.5px">${picked.size} selected</span>
+    <button class="btn sm" data-bulk="enable">Enable</button>
+    <button class="btn sm" data-bulk="disable">Disable</button>
+    <button class="btn sm" data-bulk="run">${IC.play} Run</button>
+    <button class="btn sm" data-bulk="stagger">${IC.stagger} Auto-stagger</button>
+    <button class="btn sm" data-bulk="group">Move to group…</button>
+    <button class="btn sm" data-bulk="clear" style="margin-left:auto">Clear</button>
+  </div>` : ''}
+
+  <div class="row" style="gap:9px;margin-bottom:11px;flex-wrap:wrap">
+    <div class="row" style="gap:6px;flex:1 1 230px;min-width:0">
+      <span class="muted" style="margin-left:2px">${IC.search}</span>
+      <input class="inp" id="j-q" placeholder="Search ${JOBS.length} automations…"
+        value="${esc(q)}" style="flex:1 1 auto;height:28px">
+    </div>
+    <div class="seg">
+      <button aria-pressed="${groupBy==='group'}" data-groupby="group">By group</button>
+      <button aria-pressed="${groupBy==='flat'}" data-groupby="flat">Flat</button>
+    </div>
+  </div>
+
+  <div class="chips" style="margin-bottom:12px">
+    ${['quiet','spoke','fail','hang','none','off'].map(k=>{
+      const c = JOBS.filter(j=>(j.enabled?j.last.status:'off')===k).length;
+      return c ? `<button class="chip" aria-pressed="${statusF.has(k)}" data-status="${k}">
+        <span class="dot ${k}"></span>${STATUS[k].t}<span class="n">${c}</span></button>` : '';
+    }).join('')}
+    ${(statusF.size||q||groupFilter||savedView!=='all')
+      ? `<button class="chip" data-clearf>Clear filters</button>` : ''}
+  </div>
+
+  ${list.length ? `
+  <div class="tbl-wrap" style="padding:0">
+    <table class="jt">
+      <thead><tr>
+        <th style="width:28px"><input type="checkbox" data-pickall
+          ${picked.size&&picked.size===list.length?'checked':''}></th>
+        <th style="width:18px"></th><th>Automation</th><th>Group</th><th>Schedule</th>
+        <th>Next</th><th>Duration</th><th>Last summary</th><th>Status</th><th style="width:112px"></th>
+      </tr></thead>
+      <tbody>
+        ${buckets.map(([label, js]) => `
+          ${label ? `<tr class="gh-row"><td colspan="10">${label} · ${js.length}</td></tr>` : ''}
+          ${js.map(row).join('')}`).join('')}
+      </tbody>
+    </table>
+  </div>
+  <div class="muted" style="font-size:11px;margin-top:9px">
+    Showing ${list.length} of ${JOBS.length}${groupFilter?` · group: ${esc(grpOf(groupFilter)[1])}`:''}${
+      savedView!=='all'?` · view: ${VIEWS[savedView][0]}`:''}
+  </div>`
+  : `<div class="card empty">
+      <span class="muted">${IC.search}</span>
+      <div class="t">No automations match</div>
+      <div class="muted" style="font-size:12px">Try clearing the search or status filters.</div>
+      <button class="btn sm" data-clearf>Clear filters</button>
+    </div>`}`;
+}
+
+/* ============ view: schedule (load, not lanes) ============ */
+function startsOf(j) {
+  if (!j.enabled) return [];
+  if (j.schedule.mode === 'interval') {
+    const out = []; for (let h = 0; h < 24; h += j.schedule.everyHours) out.push(h*60); return out;
+  }
+  return j.schedule.times.map(t => { const [hh,mm] = t.split(':').map(Number); return hh*60+mm; });
+}
+function loadProfile() {
+  const mins = new Array(1440).fill(0);
+  for (const j of JOBS) for (const s of startsOf(j)) {
+    const len = Math.max(1, Math.round(j.last.dur/60));
+    for (let i = 0; i < len; i++) mins[(s+i)%1440]++;
+  }
+  return mins;
+}
+function vSchedule() {
+  const mins = loadProfile();
+  const B = 48, bw = 1440/B;                       // 30-minute buckets
+  const buckets = Array.from({length:B}, (_,b) => Math.max(...mins.slice(b*bw,(b+1)*bw)));
+  const peak = Math.max(...buckets, 1);
+  const peakMin = mins.indexOf(Math.max(...mins));
+  const hot = buckets.map((v,b)=>[b,v]).filter(([,v])=>v>=3);
+  const hhmm = m => `${String(Math.floor(m/60)).padStart(2,'0')}:${String(m%60).padStart(2,'0')}`;
+  const busiest = GROUPS.map(([k,label]) => {
+    const list = JOBS.filter(j=>j.group===k&&j.enabled);
+    return [label, list.reduce((a,j)=>a+j.last.dur,0), list.length];
+  }).sort((a,b)=>b[1]-a[1]);
+
+  return `
+  <div class="grid g4">
+    ${[['Peak concurrency', Math.max(...mins), `at ${hhmm(peakMin)}`],
+       ['Busiest window', hhmm(Math.floor(peakMin/30)*30), `${hot.length} windows ≥3 jobs`],
+       ['Scheduled starts', JOBS.filter(j=>j.enabled).reduce((a,j)=>a+startsOf(j).length,0), 'per day'],
+       ['Longest job', fmtDur(Math.max(...JOBS.map(j=>j.last.dur))), 'restic integrity']
+      ].map(([l,v,s])=>`<div class="card pad col" style="gap:3px">
+        <div class="lbl">${l}</div><div class="num">${v}</div>
+        <div class="muted" style="font-size:11px">${s}</div></div>`).join('')}
+  </div>
+
+  <div class="sec-h"><h3>Load across the day</h3><span class="ln"></span>
+    <span class="muted" style="font-size:11px">concurrent automations · 30-min buckets</span></div>
+  <div class="card pad">
+    <div class="histo">
+      ${buckets.map((v,b)=>`<i class="${v>=5?'crit':v>=3?'hot':''}"
+        style="height:${Math.max(2, v/peak*100)}%"
+        title="${hhmm(b*bw)}–${hhmm((b+1)*bw-1)} — ${v} concurrent"></i>`).join('')}
+    </div>
+    <div class="histo-ax">${Array.from({length:8},(_,i)=>`<span>${String(i*3).padStart(2,'0')}:00</span>`).join('')}</div>
+    <div class="row" style="gap:14px;margin-top:11px;font-size:11px" class="muted">
+      <span class="row muted" style="gap:6px"><i style="width:9px;height:9px;border-radius:2px;background:var(--accent);opacity:.75"></i>1–2 concurrent</span>
+      <span class="row muted" style="gap:6px"><i style="width:9px;height:9px;border-radius:2px;background:var(--spoke)"></i>3–4</span>
+      <span class="row muted" style="gap:6px"><i style="width:9px;height:9px;border-radius:2px;background:var(--fail)"></i>5+</span>
+    </div>
+  </div>
+
+  ${hot.length ? `
+  <div class="sec-h"><h3>Contended windows</h3><span class="ln"></span>
+    <button class="btn sm pri" data-bulk="stagger">${IC.stagger} Auto-stagger all</button></div>
+  <div class="card" style="overflow:hidden">
+    ${hot.slice(0,6).map(([b,v],i)=>{
+      const from = b*bw, to = (b+1)*bw;
+      const overlap = JOBS.filter(j=>j.enabled&&startsOf(j).some(s=>s>=from-60&&s<to));
+      return `<div class="row" style="padding:10px 13px;${i?'border-top:.5px solid var(--line-soft)':''}">
+        <span class="badge ${v>=5?'fail':'spoke'}">${v} at once</span>
+        <span class="mono" style="font-size:12px">${hhmm(from)}–${hhmm(to-1)}</span>
+        <span class="muted trunc" style="font-size:11.5px;min-width:0">${
+          overlap.slice(0,4).map(j=>esc(j.title)).join(', ')}${overlap.length>4?` +${overlap.length-4}`:''}</span>
+        <button class="btn sm ghost" style="margin-left:auto">Restage</button>
+      </div>`;
+    }).join('')}
+  </div>
+  <div class="note" style="margin-top:11px">
+    <span style="color:var(--accent);flex:0 0 auto">${IC.warn}</span>
+    <div><b>Why this matters at ${JOBS.length} automations.</b> Each job holds its own timeout window, and
+    <span class="mono">bin/run</span> walks the tier sequentially — so a crowded 02:00 turns a
+    2-minute sweep into an hour, and one hung job blocks every job behind it. Auto-stagger spreads
+    the selected automations across a window you choose, longest first.</div>
+  </div>` : ''}
+
+  <div class="sec-h"><h3>Runtime by group</h3><span class="ln"></span></div>
+  <div class="card pad col" style="gap:11px">
+    ${busiest.map(([label,sec,n])=>`
+      <div class="row" style="gap:11px">
+        <span style="width:146px;flex:0 0 146px;font-size:12px" class="trunc">${label}</span>
+        <div style="flex:1 1 auto;min-width:0"><div class="sbar" style="height:9px">
+          <i class="quiet" style="width:${sec/busiest[0][1]*100}%"></i></div></div>
+        <span class="mono" style="font-size:11.5px;min-width:72px;text-align:right">${fmtDur(sec)}</span>
+        <span class="muted" style="font-size:11px;min-width:30px;text-align:right">${n}</span>
+      </div>`).join('')}
+  </div>`;
+}
+
+/* ============ view: logs ============ */
+function vLogs() {
+  let rows = LOG;
+  if (logFilter !== 'all') rows = rows.filter(l => logFilter === 'alerts'
+    ? (l.sev === 'alert' || l.sev === 'err') : l.src === logFilter || l.src.startsWith(logFilter));
+  if (logQuery) rows = rows.filter(l => (l.msg+l.src).toLowerCase().includes(logQuery.toLowerCase()));
+  const speaking = JOBS.filter(j=>j.enabled&&ATTN.includes(j.last.status));
+
+  return `
+  <div class="card" style="overflow:hidden;padding:0">
+    <div class="logbar">
+      <input class="inp" id="log-q" placeholder="Filter log…" value="${esc(logQuery)}" style="width:180px">
+      <select class="inp" id="log-src">
+        <option value="all"${logFilter==='all'?' selected':''}>All ${JOBS.length} sources</option>
+        <option value="alerts"${logFilter==='alerts'?' selected':''}>Alerts only</option>
+        ${GROUPS.map(([k,label])=>`<optgroup label="${label}">${
+          JOBS.filter(j=>j.group===k).map(j=>
+            `<option value="${j.label}"${logFilter===j.label?' selected':''}>${esc(j.title)}</option>`).join('')
+        }</optgroup>`).join('')}
+      </select>
+      <div class="seg">
+        <button aria-pressed="${logGroup}" id="log-group">By sweep</button>
+        <button aria-pressed="${!logGroup}" id="log-flat">Flat</button>
+      </div>
+      <span class="muted" style="font-size:11px;margin-left:auto">${rows.length} lines · per-job files in
+        logs/job-&lt;slug&gt;.out.log</span>
+      <button class="btn sm ghost">${IC.refresh} Tail</button>
+    </div>
+    <div class="loglist">
+      ${logGroup?`<div class="runsep"><span class="dot spoke"></span>Sweep 2026-10-20<span class="ln"></span>
+        <span style="text-transform:none;letter-spacing:0">${speaking.length} jobs spoke of ${JOBS.filter(j=>j.enabled).length}</span></div>`:''}
+      ${rows.map(l=>`<div class="lg ${l.sev}"><span class="t">${l.time}</span>
+        <span class="s">${esc(l.src)}</span><span class="m">${esc(l.msg)}</span></div>`).join('')
+        || '<div class="lg"><span class="m muted">No matching lines.</span></div>'}
+    </div>
+  </div>
+  <div class="note" style="margin-top:12px">
+    <span style="color:var(--spoke);flex:0 0 auto">${IC.warn}</span>
+    <div><b>One 5 MB log will not survive ${JOBS.length} automations.</b> At this size each automation writes its own
+    <span class="mono">logs/job-&lt;slug&gt;.out.log</span> and the shared
+    <span class="mono">machine-ops.log</span> keeps only the one-line-per-run summaries — otherwise a single
+    chatty job rotates away everyone else's history.</div>
+  </div>`;
+}
+
+/* ============ mole privilege facts (verified against mole 1.54.0 source) ============ */
+const PRIV = {
+  'mole-optimize': { state:'full', gate:'sudo -n true', ok:true,
+    needs:['/usr/bin/sfltool dumpbtm','/usr/bin/true'],
+    note:'Every privileged command optimize invokes is pinned in /etc/sudoers.d/mole, so all subtasks run unattended.' },
+  'mole-clean': { state:'user', gate:'sudo -n -v', ok:false, deep:true,
+    needs:['/bin/rm -rf <any path>','/usr/bin/find <any args>'],
+    note:'The system pass needs root rm/find with unrestricted arguments — sudo find … -exec is arbitrary root execution, so granting it equals NOPASSWD: ALL. It stays user-level at 02:00 by design; run Deep clean to include it.' },
+};
+
+/* ============ view: detail ============ */
+function vDetail() {
+  const j = JOBS.find(x => x.file === selected);
+  if (!j) return vJobs();
+  const st = j.enabled ? j.last.status : 'off';
+  const s = j.schedule, p = PRIV[j.label];
+  const jobLog = LOG.filter(l => l.src === j.label || l.src.startsWith(j.file));
+
+  return `
+  <div class="row" style="margin-bottom:14px">
+    <button class="ibtn" data-nav="jobs" title="Back">${IC.back}</button>
+    <span style="color:var(--ink-2)">${IC[j.kind]||IC.sh}</span>
+    <div class="col" style="gap:0;min-width:0">
+      <div style="font-size:16px;font-weight:600;letter-spacing:-.018em" class="trunc">${esc(j.title)}</div>
+      <div class="muted mono" style="font-size:11px">jobs/${esc(j.file)} · ${esc(grpOf(j.group)[1])}</div>
+    </div>
+    <span class="badge ${st}">${STATUS[st].t}</span>
+    <div class="row" style="gap:6px;margin-left:auto">
+      <button class="btn" data-run="${j.file}">${IC.play} Run now</button>
+      <button class="btn" data-dry="${j.file}">${IC.flask} Dry run</button>
+      ${p?.deep?`<button class="btn" data-deep="${j.file}">${IC.shield} Deep clean</button>`:''}
+      <button class="btn danger" data-del="${j.file}">${IC.trash}</button>
+    </div>
+  </div>
+
+  <div class="grid g2" style="align-items:start">
+    <div class="col" style="gap:11px">
+      <div class="card pad col" style="gap:11px">
+        <div class="row"><span style="font-weight:600;font-size:12.5px">Enabled</span>
+          <input class="sw" type="checkbox" ${j.enabled?'checked':''} data-toggle="${j.file}" style="margin-left:auto"></div>
+        <div class="muted" style="font-size:11.5px">Writes <span class="mono">state/console.json</span> and
+          boots its LaunchAgent in or out. The script stays on disk.</div>
+      </div>
+
+      <div class="card pad col" style="gap:11px">
+        <div style="font-weight:600;font-size:12.5px">When it runs</div>
+        <div class="seg" style="align-self:flex-start">
+          ${['daily','weekly','interval','manual'].map(m=>
+            `<button aria-pressed="${s.mode===m}" data-mode="${m}">${m[0].toUpperCase()+m.slice(1)}</button>`).join('')}
+        </div>
+        ${s.mode==='weekly'?`<div class="row" style="gap:4px;flex-wrap:wrap">
+          ${DAYS.map(d=>`<button class="btn sm" style="${s.days.includes(d)?'background:var(--accent);color:#fff;border-color:transparent':''}">${d}</button>`).join('')}
+        </div>`:''}
+        ${s.mode==='interval'?`<div class="row"><input class="inp" type="number" value="${s.everyHours}" style="width:70px">
+          <span class="muted">hours between runs</span></div>`:''}
+        ${(s.mode==='daily'||s.mode==='weekly')?`
+          <div class="row" style="flex-wrap:wrap;gap:6px">
+            ${s.times.map(t=>`<span class="pill mono">${t}</span>`).join('')}
+            <button class="btn sm ghost">${IC.plus} Add time</button>
+          </div>`:''}
+        <div class="row" style="border-top:.5px solid var(--line-soft);padding-top:10px">
+          <span class="lbl">Next run</span>
+          <span style="margin-left:auto;font-weight:600;font-size:12.5px">${
+            j.enabled?untilStr(nextRun(j)):'<span class="muted">disabled</span>'}</span>
+        </div>
+      </div>
+
+      <div class="card pad col" style="gap:11px">
+        <div style="font-weight:600;font-size:12.5px">Guard rails</div>
+        <div class="field" style="margin:0"><label>Timeout</label>
+          <div class="row"><input class="inp" type="number" value="${j.timeout}" style="width:92px">
+            <span class="muted">seconds</span></div>
+          <div class="hint">Written as <span class="mono"># timeout: ${j.timeout}</span> on line 3.
+            On expiry the process group is TERM'd, graced 5s, then KILL'd.</div></div>
+        <div class="field" style="margin:0"><label>Group</label>
+          <select class="inp" style="height:28px;align-self:flex-start">
+            ${GROUPS.map(([k,l])=>`<option ${k===j.group?'selected':''}>${l}</option>`).join('')}
+          </select>
+          <div class="hint">Groups drive the sidebar, the rollups and bulk actions — the only thing that
+            keeps ${JOBS.length} automations navigable.</div></div>
+      </div>
+
+      ${p?`
+      <div class="card pad col" style="gap:10px">
+        <div class="row"><span style="font-weight:600;font-size:12.5px">Privileges</span>
+          <span class="badge ${p.ok?'quiet':'off'}" style="margin-left:auto">${p.ok?'Fully privileged':'User level only'}</span></div>
+        <dl class="kv">
+          <dt>Gate</dt><dd class="mono">${esc(p.gate)} → <span style="color:var(--${p.ok?'quiet':'spoke'})">${p.ok?'passes':'fails'}</span></dd>
+          <dt>${p.ok?'Uses':'Would need'}</dt><dd class="mono" style="font-size:11.5px">${p.needs.map(esc).join('<br>')}</dd>
+        </dl>
+        <div class="muted" style="font-size:11.5px;border-top:.5px solid var(--line-soft);padding-top:10px">${esc(p.note)}</div>
+        ${p.deep?`<button class="btn" data-deep="${j.file}" style="align-self:flex-start">${IC.shield} Deep clean (asks for Touch ID)</button>`:''}
+      </div>`:''}
+    </div>
+
+    <div class="col" style="gap:11px">
+      <div class="card pad col" style="gap:10px">
+        <div class="row"><span style="font-weight:600;font-size:12.5px">Last run</span>
+          <span class="muted" style="margin-left:auto;font-size:11.5px">${esc(j.last.ts)}</span></div>
+        <dl class="kv">
+          <dt>Outcome</dt><dd><span class="badge ${st}">${STATUS[st].t}</span></dd>
+          <dt>Exit code</dt><dd class="mono">${j.last.rc}</dd>
+          <dt>Duration</dt><dd>${j.last.dur?fmtDur(j.last.dur):'—'} <span class="muted">of ${j.timeout}s budget</span></dd>
+          <dt>Summary</dt><dd class="mono" style="font-size:11.5px">${esc(j.last.summary)}</dd>
+        </dl>
+      </div>
+      <div class="card pad col" style="gap:9px">
+        <div style="font-weight:600;font-size:12.5px">Last 30 runs</div>
+        <div class="fleet-cells">${j.history.map((h,i)=>
+          `<i class="${h}" title="${30-i}d ago — ${STATUS[h].t}"></i>`).join('')}</div>
+      </div>
+      <div class="card pad col" style="gap:9px">
+        <div style="font-weight:600;font-size:12.5px">Log — ${esc(j.label)}</div>
+        <div class="loglist" style="max-height:230px;overflow:auto;margin:0 -11px">
+          ${jobLog.length?jobLog.map(l=>`<div class="lg ${l.sev}"><span class="t">${l.time}</span>
+            <span class="m">${esc(l.msg)}</span></div>`).join('')
+            :'<div class="lg"><span class="m muted">No entries in the current window.</span></div>'}
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+/* ============ view: settings ============ */
+function vSettings() {
+  return `
+  <div class="sec-h"><h3>Scale</h3><span class="ln"></span></div>
+  <div class="card pad col" style="gap:11px">
+    <dl class="kv">
+      <dt>Automations</dt><dd>${JOBS.length} across ${GROUPS.length} groups</dd>
+      <dt>LaunchAgents</dt><dd>${JOBS.filter(j=>j.enabled).length} loaded · one per enabled automation</dd>
+      <dt>Log strategy</dt><dd>per-job <span class="mono">logs/job-&lt;slug&gt;.out.log</span> +
+        shared summary log</dd>
+      <dt>Peak concurrency</dt><dd>${Math.max(...loadProfile())} at once</dd>
+    </dl>
+    <div class="note">
+      <span style="color:var(--accent);flex:0 0 auto">${IC.check}</span>
+      <div><b>Groups are the scaling primitive.</b> They drive the sidebar, the rollup cards, the fleet
+      heatmap and every bulk action. Without them the console degrades into a flat list the moment you pass
+      roughly a dozen automations.</div>
+    </div>
+  </div>
+
+  <div class="sec-h"><h3>Privileges</h3><span class="ln"></span></div>
+  <div class="card pad col" style="gap:11px">
+    <div class="row"><span style="font-weight:600;font-size:12.5px">/etc/sudoers.d/mole</span>
+      <span class="badge quiet" style="margin-left:auto">installed · mode 440</span></div>
+    <dl class="kv">
+      <dt>mole optimize</dt><dd><span class="badge quiet">Fully privileged</span></dd>
+      <dt>mole clean</dt><dd><span class="badge off">User level only</span></dd>
+    </dl>
+    <div class="note" style="background:var(--spoke-bg)">
+      <span style="color:var(--spoke);flex:0 0 auto">${IC.warn}</span>
+      <div><b>Do not add <span class="mono">verifypw = any</span>.</b> It would let mole enter the system
+      pass and then fail every deletion — <span class="mono">rm</span> and <span class="mono">find</span>
+      are not granted. Use <b>Deep clean</b> instead.</div>
+    </div>
+  </div>
+
+  <div class="sec-h"><h3>Safety</h3><span class="ln"></span></div>
+  <div class="card pad col" style="gap:10px">
+    <div class="note" style="background:var(--fail-bg)">
+      <span style="color:var(--fail);flex:0 0 auto">${IC.warn}</span>
+      <div><b>Never root, never sudo.</b> Every automation runs as you, under a user LaunchAgent. The
+      console refuses to install a LaunchDaemon or run a job with elevated privileges.</div>
+    </div>
+    <dl class="kv">
+      <dt>Default timeout</dt><dd class="mono">900s</dd>
+      <dt>Kill grace</dt><dd class="mono">5s between TERM and KILL</dd>
+      <dt>stdin</dt><dd class="mono">/dev/null on every job</dd>
+    </dl>
+  </div>`;
+}
+
+/* ============ command palette ============ */
+function renderPalette() {
+  if (!palOpen) { layer.innerHTML = ''; return; }
+  const s = palQ.toLowerCase();
+  const hits = JOBS.filter(j => (j.title+j.file+j.group).toLowerCase().includes(s)).slice(0, 40);
+  layer.innerHTML = `
+  <div class="scrim" style="align-items:flex-start" data-close>
+    <div class="pal" role="dialog" aria-modal="true">
+      <input id="pal-q" placeholder="Jump to an automation…" value="${esc(palQ)}" autofocus>
+      <div class="pal-list">
+        ${hits.length?hits.map((j,i)=>`
+          <button class="pal-item ${i===0?'on':''}" data-job="${j.file}">
+            <span class="dot ${j.enabled?j.last.status:'off'}"></span>
+            <span class="trunc">${esc(j.title)}</span>
+            <span class="g">${esc(grpOf(j.group)[1])}</span></button>`).join('')
+        :`<div class="empty"><div class="t">No match</div></div>`}
+      </div>
+    </div>
+  </div>`;
+  const inp = $('#pal-q');
+  if (inp) { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
+}
+
+/* ============ modals ============ */
+function modalRun(file, dry) {
+  const j = JOBS.find(x=>x.file===file), quiet = j.last.status==='quiet';
+  layer.innerHTML = `
+  <div class="scrim" data-close><div class="modal" style="width:min(620px,100%)">
+    <div class="row" style="gap:9px">
+      <span style="color:var(--${dry?'accent':quiet?'quiet':'spoke'})">${dry?IC.flask:quiet?IC.check:IC.warn}</span>
+      <div class="col" style="gap:1px"><h3 style="margin:0">${dry?'Dry run':'Run'} — ${esc(j.title)}</h3>
+        <span class="muted mono" style="font-size:11.5px">bin/run-job jobs/${esc(j.file)}</span></div>
+      <span class="badge ${dry?'off':quiet?'quiet':j.last.status}" style="margin-left:auto">${
+        dry?'preview':STATUS[j.last.status].t}</span>
+    </div>
+    <pre class="src" style="margin-top:13px">${dry
+      ? `[${j.label}] dry run — no changes made\n<b>(no output on stdout — this run would be silent)</b>`
+      : quiet ? `[${j.label}] ${esc(j.last.summary)}\n<b>(no output on stdout — silent, which is success)</b>`
+      : `== ${j.label} ==\n[${j.label}] ${esc(j.last.summary)}`}</pre>
+    <div class="row" style="margin-top:16px;justify-content:flex-end;gap:7px">
+      <button class="btn pri" data-close>Done</button></div>
+  </div></div>`;
+}
+function modalDel(file) {
+  const j = JOBS.find(x=>x.file===file);
+  layer.innerHTML = `
+  <div class="scrim" data-close><div class="modal" style="width:min(460px,100%)">
+    <div class="row" style="gap:11px;align-items:flex-start">
+      <span style="color:var(--fail);flex:0 0 auto">${IC.warn}</span>
+      <div class="col" style="gap:5px"><h3 style="margin:0">Delete “${esc(j.title)}”?</h3>
+        <p class="muted" style="margin:0;font-size:12.5px">Boots out
+          <span class="mono">ai.machineops.${j.label}</span>, drops its entry from
+          <span class="mono">state/console.json</span> and trashes
+          <span class="mono">jobs/${esc(j.file)}</span>.</p></div>
+    </div>
+    <div class="row" style="margin-top:16px;justify-content:flex-end;gap:7px">
+      <button class="btn" data-close>Cancel</button>
+      <button class="btn danger" data-confirmdel="${file}">Delete</button></div>
+  </div></div>`;
+}
+function modalDeep(file) {
+  const j = JOBS.find(x=>x.file===file);
+  layer.innerHTML = `
+  <div class="scrim" data-close><div class="modal" style="width:min(600px,100%)">
+    <div class="row" style="gap:10px;align-items:flex-start">
+      <span style="color:var(--accent);flex:0 0 auto">${IC.shield}</span>
+      <div class="col" style="gap:4px"><h3 style="margin:0">Deep clean — includes the system pass</h3>
+        <p class="muted" style="margin:0;font-size:12.5px">Adds mole's system-level pass:
+          <span class="mono">/Library/Caches</span>, <span class="mono">/Library/Logs/DiagnosticReports</span>,
+          <span class="mono">/private/var/log</span>, <span class="mono">/private/var/db/diagnostics</span>.</p></div>
+    </div>
+    <div class="note" style="margin-top:14px"><span style="color:var(--accent);flex:0 0 auto">${IC.check}</span>
+      <div><b>You authenticate once, now.</b> The console runs <span class="mono">sudo -v</span> behind
+      Touch ID, caching a normal sudo timestamp; <span class="mono">mole clean</span> then sees
+      <span class="mono">sudo -n -v</span> succeed and enables the system pass itself.
+      <b>No sudoers change is involved.</b></div></div>
+    <div class="note" style="margin-top:9px;background:var(--fail-bg)">
+      <span style="color:var(--fail);flex:0 0 auto">${IC.warn}</span>
+      <div><b>Why it is a button, not a schedule.</b> Unattended, this would need NOPASSWD on
+      <span class="mono">rm -rf</span> and <span class="mono">find</span> with unrestricted arguments.
+      <span class="mono">sudo find … -exec</span> runs anything as root — equivalent to
+      <span class="mono">NOPASSWD: ALL</span>.</div></div>
+    <div class="row" style="margin-top:16px;justify-content:flex-end;gap:7px">
+      <button class="btn" data-close>Cancel</button>
+      <button class="btn pri" data-close>${IC.shield} Authenticate &amp; deep clean</button></div>
+  </div></div>`;
+}
+function modalStagger() {
+  const sel = picked.size ? JOBS.filter(j=>picked.has(j.file)) : JOBS.filter(j=>j.enabled);
+  layer.innerHTML = `
+  <div class="scrim" data-close><div class="modal" style="width:min(560px,100%)">
+    <h3>Auto-stagger ${sel.length} automations</h3>
+    <p class="muted" style="margin:4px 0 14px;font-size:12.5px">Spreads start times across a window so no
+      two long jobs overlap. Longest first, so the heavy work lands while the machine is idlest.</p>
+    <div class="grid g2">
+      <div class="field" style="margin:0"><label>Window start</label>
+        <input class="inp" value="01:00" style="height:30px"></div>
+      <div class="field" style="margin:0"><label>Window end</label>
+        <input class="inp" value="05:00" style="height:30px"></div>
+    </div>
+    <div class="field"><label>Max concurrent</label>
+      <input class="inp" type="number" value="2" style="height:30px;width:80px">
+      <div class="hint">Peak today is ${Math.max(...loadProfile())}.</div></div>
+    <div class="note" style="margin-top:13px"><span style="color:var(--accent);flex:0 0 auto">${IC.check}</span>
+      <div>Rewrites <span class="mono">StartCalendarInterval</span> in each LaunchAgent and the schedule in
+      <span class="mono">state/console.json</span>. Reversible — the previous layout is kept.</div></div>
+    <div class="row" style="margin-top:16px;justify-content:flex-end;gap:7px">
+      <button class="btn" data-close>Cancel</button>
+      <button class="btn pri" data-close>Preview new layout</button></div>
+  </div></div>`;
+}
+
+/* ============ render ============ */
+const TITLES = {
+  overview:['Overview','exceptions first — quiet automations stay out of the way'],
+  jobs:['Automations','search, filter, group and act in bulk'],
+  schedule:['Schedule','where the load actually lands across the day'],
+  logs:['Logs','per-job files plus the shared summary log'],
+  settings:['Settings','scale, privileges and safety rails'],
+  detail:['Automation','configuration, history and log'],
+};
+function render() {
+  renderChrome();
+  const [t, s] = TITLES[view] || TITLES.overview;
+  $('#toolbar').innerHTML = `<h2>${t}</h2><span class="sub">${s}</span><div class="spacer"></div>
+    ${view==='jobs'?`<button class="btn pri" id="btn-add2">${IC.plus} New automation</button>`:''}
+    ${view==='schedule'?`<button class="btn" data-bulk="stagger">${IC.stagger} Auto-stagger</button>`:''}`;
+  $('#view').innerHTML = ({overview:vOverview, jobs:vJobs, schedule:vSchedule,
+    logs:vLogs, settings:vSettings, detail:vDetail}[view] || vOverview)();
+}
+
+/* ============ events ============ */
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-nav],[data-job],[data-open],[data-run],[data-dry],[data-del],[data-deep],[data-view],[data-grp],[data-grpopen],[data-status],[data-groupby],[data-bulk],[data-mode],[data-clearf],[data-close],[data-confirmdel],#btn-add,#btn-add2,#btn-theme,#btn-pal,#log-group,#log-flat');
+  if (!t) return;
+  const d = t.dataset;
+
+  if (t.id === 'btn-theme') {
+    const cur = document.documentElement.dataset.theme
+      || (matchMedia('(prefers-color-scheme:dark)').matches ? 'dark' : 'light');
+    document.documentElement.dataset.theme = cur === 'dark' ? 'light' : 'dark';
+    return renderChrome();
+  }
+  if (t.id === 'btn-pal') { palOpen = true; palQ = ''; return renderPalette(); }
+  if (t.id === 'btn-add' || t.id === 'btn-add2') { layer.innerHTML=''; return; }
+  if (t.id === 'log-group' || t.id === 'log-flat') { logGroup = t.id==='log-group'; return render(); }
+  if (d.close !== undefined && (e.target === t || t.tagName === 'BUTTON')) {
+    palOpen = false; layer.innerHTML = ''; return;
+  }
+  if (d.confirmdel) { JOBS = JOBS.filter(j=>j.file!==d.confirmdel); layer.innerHTML=''; return go('jobs'); }
+  if (d.deep) return modalDeep(d.deep);
+  if (d.del) return modalDel(d.del);
+  if (d.run) return modalRun(d.run, false);
+  if (d.dry) return modalRun(d.dry, true);
+  if (d.grp) { collapsed.has(d.grp) ? collapsed.delete(d.grp) : collapsed.add(d.grp); return renderChrome(); }
+  if (d.grpopen) { groupFilter = d.grpopen; savedView = 'all'; return go('jobs'); }
+  if (d.view) { savedView = d.view; groupFilter = null; statusF.clear(); return go('jobs'); }
+  if (d.status) { statusF.has(d.status) ? statusF.delete(d.status) : statusF.add(d.status); return render(); }
+  if (d.groupby) { groupBy = d.groupby; return render(); }
+  if (d.clearf !== undefined) { statusF.clear(); q=''; groupFilter=null; savedView='all'; return render(); }
+  if (d.bulk) {
+    if (d.bulk === 'stagger') return modalStagger();
+    if (d.bulk === 'clear') picked.clear();
+    if (d.bulk === 'enable' || d.bulk === 'disable')
+      JOBS.forEach(j => { if (picked.has(j.file)) j.enabled = d.bulk === 'enable'; });
+    return render();
+  }
+  if (d.mode) { JOBS.find(x=>x.file===selected).schedule.mode = d.mode; return render(); }
+  if (d.nav) { groupFilter = null; return go(d.nav); }
+  if (d.job || d.open) { palOpen = false; layer.innerHTML=''; return go('detail', d.job || d.open); }
+});
+document.addEventListener('change', e => {
+  const el = e.target;
+  if (el.dataset.toggle) { JOBS.find(j=>j.file===el.dataset.toggle).enabled = el.checked; return render(); }
+  if (el.dataset.pick) { el.checked ? picked.add(el.dataset.pick) : picked.delete(el.dataset.pick); return render(); }
+  if (el.dataset.pickall !== undefined) {
+    el.checked ? visible().forEach(j=>picked.add(j.file)) : picked.clear(); return render();
+  }
+  if (el.id === 'log-src') { logFilter = el.value; return render(); }
+});
+document.addEventListener('input', e => {
+  const el = e.target;
+  if (el.id === 'j-q') { q = el.value; render();
+    const n = $('#j-q'); if (n) { n.focus(); n.setSelectionRange(n.value.length, n.value.length); } }
+  if (el.id === 'log-q') { logQuery = el.value; render();
+    const n = $('#log-q'); if (n) { n.focus(); n.setSelectionRange(n.value.length, n.value.length); } }
+  if (el.id === 'pal-q') { palQ = el.value; renderPalette(); }
+});
+document.addEventListener('keydown', e => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault(); palOpen = true; palQ = ''; return renderPalette();
+  }
+  if (e.key === 'Escape') { palOpen = false; layer.innerHTML = ''; }
+  if (e.key === 'Enter' && palOpen) {
+    const first = document.querySelector('.pal-item');
+    if (first) { palOpen = false; layer.innerHTML=''; go('detail', first.dataset.job); }
+  }
+});
+
+render();
+</script>

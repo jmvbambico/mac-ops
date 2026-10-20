@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MacOps</title>
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+
+  <body>
+    <div class="win">
+      <div class="titlebar">
+        <div class="lights"><i></i><i></i><i></i></div>
+        <span class="brand-mark" id="brand-mark" aria-hidden="true"></span>
+        <div class="tb-title">MacOps</div>
+        <div class="tb-right">
+          <button class="btn sm ghost" id="btn-pal">
+            <span class="kbd">⌘</span><span class="kbd">K</span>&nbsp;Jump to…
+          </button>
+          <span id="tb-status"></span>
+          <button class="ibtn" id="btn-refresh" title="Reload from disk"></button>
+          <button class="ibtn" id="btn-theme" title="Toggle appearance"></button>
+        </div>
+      </div>
+      <div class="shell">
+        <aside class="sidebar">
+          <div class="nav-label">Console</div>
+          <div id="nav"></div>
+          <div class="nav-label">Views</div>
+          <div id="nav-views"></div>
+          <div class="nav-label">Groups</div>
+          <div id="nav-groups"></div>
+          <button class="nav-item" id="btn-add" style="margin-top: 8px; color: var(--accent)">
+            <span class="ic" id="add-ic"></span>New automation
+          </button>
+        </aside>
+        <main class="main">
+          <div class="toolbar" id="toolbar"></div>
+          <div class="scroll" id="view"></div>
+          <div class="statusbar" id="statusbar"></div>
+        </main>
+      </div>
+    </div>
+    <div id="layer"></div>
+    <div class="toasts" id="toasts"></div>
+  </body>
+</html>

@@ -1,0 +1,489 @@
+#!/usr/bin/env bash
+#
+# bin/run — machine-ops dispatcher.
+#
+# Usage: bin/run [daily|weekly] [--dry-run]
+#
+# Runs jobs/*.sh in filename sort order. Each job declares its tier in a
+# "# tier: <name>" comment on line 2; jobs whose tier differs from the
+# requested tier are skipped silently. A job whose tier line is missing,
+# malformed, or unreadable ALERTS instead of skipping — a job that quietly
+# never runs is the worst failure mode for a maintenance tool.
+#
+# Silent-on-success: prints NOTHING when every job is silent. Any job output
+# on stdout is treated as an alert and re-printed under a short header, as
+# is any job that exits non-zero (a crashed job that says nothing must still
+# surface: the alert names the job and its exit code plus the tail of its
+# stderr), or any job that exceeds its timeout (JOB_TIMEOUT_SEC by default,
+# `# timeout: <secs>` on line 3 optionally overrides it; the whole process
+# group is killed and the timeout alerts loudly). A job that exits 0 stays silent even if it wrote to stderr —
+# mole logs benign noise there and alerting on it would false-alarm.
+# A timestamped record of every run is always appended to
+# logs/machine-ops.log (rotated past ~5 MB, one .1 backup kept).
+#
+# Exit status is 0 even when jobs report problems — stdout is the alert
+# channel, not the exit code. Non-zero only when the dispatcher itself is
+# broken (bad arguments, missing jobs dir, unwritable log).
+#
+# With --dry-run, jobs are told via MACHINE_OPS_DRY_RUN=1 to preview only.
+#
+# Never run under sudo: mole refuses to run as root, so this dispatcher and
+# every job must run as the user, with no sudo and no password handling.
+
+set -u
+
+# launchd starts with a minimal PATH; pin a full one, defensively.
+export PATH="/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+usage() {
+    printf 'Usage: %s [daily|weekly] [--dry-run]\n' "$(basename "$0")" >&2
+}
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+JOBS_DIR="$REPO_ROOT/jobs"
+LOG_DIR="$REPO_ROOT/logs"
+LOG_FILE="$LOG_DIR/machine-ops.log"
+export MACHINE_OPS_LOG="$LOG_FILE"
+
+# Per-job wall-clock timeout. Observed baselines: optimize ~20s, clean ~52s
+# in apply mode, so 900s (15 min) is ~17x headroom and only a genuine hang
+# trips it. Note jobs/10-mole-optimize.sh can legitimately add
+# SCORE_SETTLE_SEC (30s) on the drop path; that is inside this headroom.
+JOB_TIMEOUT_SEC=900
+# Grace between TERM and KILL when a timed-out job's process group is killed.
+JOB_KILL_GRACE_SEC=5
+
+# shellcheck disable=SC1091 # path resolved at runtime from the script location
+if ! source "$REPO_ROOT/lib/common.sh"; then
+    printf 'bin/run: cannot load lib/common.sh\n' >&2
+    exit 1
+fi
+
+TIER="daily"
+DRY_RUN="0"
+
+for arg in "$@"; do
+    case "$arg" in
+        daily|weekly)
+            TIER="$arg"
+            ;;
+        --dry-run)
+            DRY_RUN="1"
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            printf 'bin/run: unknown argument: %s\n' "$arg" >&2
+            usage
+            exit 2
+            ;;
+    esac
+done
+
+export MACHINE_OPS_DRY_RUN="$DRY_RUN"
+
+if [[ ! -d "$JOBS_DIR" ]]; then
+    printf 'bin/run: jobs directory missing: %s\n' "$JOBS_DIR" >&2
+    exit 1
+fi
+if ! mkdir -p "$LOG_DIR" 2>/dev/null; then
+    printf 'bin/run: cannot create log directory: %s\n' "$LOG_DIR" >&2
+    exit 1
+fi
+if ! touch "$LOG_FILE" 2>/dev/null; then
+    printf 'bin/run: cannot write log file: %s\n' "$LOG_FILE" >&2
+    exit 1
+fi
+
+# Rotate the run log past ~5 MB, keeping one .1 backup.
+rotate_log() {
+    local size raw
+    if [[ -f "$LOG_FILE" ]]; then
+        raw="$(stat -f%z "$LOG_FILE" 2>/dev/null \
+            || stat -c%s "$LOG_FILE" 2>/dev/null \
+            || wc -c < "$LOG_FILE" 2>/dev/null \
+            || printf '0')"
+        size="$(printf '%s' "$raw" | tr -d '[:space:]')"
+        case "$size" in
+            ''|*[!0-9]*) size=0 ;;
+        esac
+        if (( size > 5242880 )); then
+            if mv -f "$LOG_FILE" "$LOG_FILE.1"; then
+                : > "$LOG_FILE"
+                log_line "[run] rotated log (${size} bytes) to machine-ops.log.1"
+            else
+                # Never truncate the active log when the backup failed:
+                # that would destroy the only copy. Just note and continue.
+                log_line "[run] rotation skipped: could not move log to machine-ops.log.1"
+            fi
+        fi
+    fi
+}
+
+rotate_log
+
+# Per-job console state (state/console.json) can disable a job. Read it once
+# with the system python3 (no new dependencies). A missing file or entry
+# means enabled; a parse/read failure also means enabled — FAIL SAFE TOWARD
+# RUNNING, so a broken state file can never silently stop maintenance. Only
+# an explicit "enabled": false skips.
+CONSOLE_STATE="$REPO_ROOT/state/console.json"
+DISABLED_JOBS=""
+if [[ -f "$CONSOLE_STATE" ]]; then
+    if ! DISABLED_JOBS="$(/usr/bin/python3 - "$CONSOLE_STATE" <<'PY' 2>/dev/null
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as fh:
+    data = json.load(fh)
+jobs = data.get("jobs", {}) if isinstance(data, dict) else {}
+if isinstance(jobs, dict):
+    for name, entry in jobs.items():
+        if isinstance(entry, dict) and entry.get("enabled") is False:
+            print(name)
+PY
+    )"; then
+        DISABLED_JOBS=""
+        log_line "[run] WARNING: cannot parse $CONSOLE_STATE; running all jobs (fail-safe)"
+    fi
+fi
+
+# job_still_ours <pid> <expected-pgid> — true iff pid is alive AND still in
+# the expected process group. Re-checked immediately before EACH kill
+# signal: diagnostics take seconds, during which the group may exit and its
+# numeric pgid be recycled — a blind signal could then land on an unrelated
+# group. A failed check skips that signal, never escalates.
+job_still_ours() {
+    local _pid="$1" _pgid="$2" _cur
+    kill -0 "$_pid" 2>/dev/null || return 1
+    _cur="$(ps -o pgid= -p "$_pid" 2>/dev/null | tr -d '[:space:]' || true)"
+    [[ -n "$_cur" && "$_cur" == "$_pgid" ]]
+}
+
+RUN_TS="$(ts)"
+log_line "[run] start tier=$TIER dry_run=$DRY_RUN"
+
+SCRATCH="$(mktemp -d 2>/dev/null)" || {
+    printf 'bin/run: cannot create temp dir\n' >&2
+    exit 1
+}
+# shellcheck disable=SC2064
+trap "rm -rf '$SCRATCH'" EXIT
+
+SPEAK_FILE="$SCRATCH/speaking.txt"
+: > "$SPEAK_FILE"
+SPEAK_COUNT=0
+JOB_COUNT=0
+
+shopt -s nullglob
+for job in "$JOBS_DIR"/*.sh; do
+    job_name="$(basename "$job")"
+    JOB_COUNT=$((JOB_COUNT + 1))
+
+    # A job the console explicitly disabled does not run at all. Check this
+    # before the tier parse: a disabled job's metadata should not alert.
+    case $'\n'"$DISABLED_JOBS"$'\n' in
+        *$'\n'"$job_name"$'\n'*)
+            log_line "[run] skip $job_name (console state: enabled=false)"
+            continue
+            ;;
+    esac
+
+    # A job whose tier metadata is missing, malformed, or unreadable must
+    # FAIL LOUD: a maintenance job that quietly never runs is the worst
+    # failure mode here (this once skipped both mole jobs for a whole run
+    # when the tier comment sat on line 3). A cleanly parsed tier that
+    # merely targets another tier is the normal case and skips silently.
+    tier_line=""
+    # sed's own error text is suppressed: the failure is reported through
+    # the log line and alert below, keeping dispatcher stderr clean.
+    if ! tier_line="$(sed -n '2p' "$job" 2>/dev/null)"; then
+        log_line "[run] job $job_name tier unreadable (could not read line 2)"
+        printf '%s\n' "--- $job_name --- (tier metadata unreadable)" >> "$SPEAK_FILE"
+        printf '%s\n' "could not read line 2; every job must declare '# tier: <name>' there" >> "$SPEAK_FILE"
+        SPEAK_COUNT=$((SPEAK_COUNT + 1))
+        continue
+    fi
+    job_tier=""
+    # Anchored full-line match: the line must BE metadata (optional padding
+    # only), not executable code that merely contains the pattern — e.g.
+    # `echo "# tier: daily"` or `junk # tier: daily` must NOT validate.
+    # Whitespace style is free (`#tier:daily` is fine); anything else on the
+    # line is malformed metadata and takes the alert path below.
+    if [[ "$tier_line" =~ ^[[:space:]]*#[[:space:]]*tier:[[:space:]]*([a-z]+)[[:space:]]*$ ]]; then
+        job_tier="${BASH_REMATCH[1]}"
+    fi
+    if [[ -z "$job_tier" ]]; then
+        log_line "[run] job $job_name tier missing or malformed (line 2: $tier_line)"
+        printf '%s\n' "--- $job_name --- (tier metadata missing or malformed)" >> "$SPEAK_FILE"
+        printf '%s\n' "line 2 must be '# tier: <name>'; got: $tier_line" >> "$SPEAK_FILE"
+        SPEAK_COUNT=$((SPEAK_COUNT + 1))
+        continue
+    fi
+    if [[ "$job_tier" != "$TIER" ]]; then
+        log_line "[run] skip $job_name (tier=$job_tier != $TIER)"
+        continue
+    fi
+
+    out_file="$SCRATCH/out-$JOB_COUNT.txt"
+    err_file="$SCRATCH/err-$JOB_COUNT.txt"
+    : > "$out_file"
+    : > "$err_file"
+
+    # Per-job timeout override is OPTIONAL on line 3 ("# timeout: <secs>").
+    # Unlike the tier line, a missing or malformed line 3 is NOT an alert —
+    # it silently means "use the default". Anchored like the tier regex so
+    # executable code can never be mistaken for metadata. Accepted range is
+    # 1..86400 (24h): anything outside — 0, or a digit string so long it
+    # could overflow bash arithmetic or never fire — falls back to the
+    # default with a log-only note, so "no job may hang forever" always holds.
+    job_timeout="$JOB_TIMEOUT_SEC"
+    timeout_line="$(sed -n '3p' "$job" 2>/dev/null || true)"
+    if [[ "$timeout_line" =~ ^[[:space:]]*#[[:space:]]*timeout:[[:space:]]*([0-9]+)[[:space:]]*$ ]]; then
+        timeout_val="${BASH_REMATCH[1]}"
+        # Length guard BEFORE any arithmetic: strip leading zeros, then a
+        # >5-digit remainder exceeds 86400 by construction and an overlong
+        # string never reaches (( )).
+        timeout_stripped="$(printf '%s' "$timeout_val" | sed 's/^0*//')"
+        if [[ -z "$timeout_stripped" ]]; then
+            timeout_stripped="0"
+        fi
+        if [[ "${#timeout_stripped}" -gt 5 ]]; then
+            log_line "[run] job $job_name has out-of-range timeout line 3, using default ${JOB_TIMEOUT_SEC}s (got: $timeout_line)"
+        elif (( 10#$timeout_stripped >= 1 && 10#$timeout_stripped <= 86400 )); then
+            job_timeout=$((10#$timeout_stripped))
+        else
+            log_line "[run] job $job_name has out-of-range timeout line 3, using default ${JOB_TIMEOUT_SEC}s (got: $timeout_line)"
+        fi
+    else
+        # Log-only (never an alert): flag lines that attempt a timeout but
+        # failed the anchored parse (bad value, trailing text); ordinary
+        # comments stay quiet in the log.
+        if printf '%s' "$timeout_line" | grep -qi -E '^[[:space:]]*#[[:space:]]*timeout'; then
+            log_line "[run] job $job_name has malformed timeout line 3, using default ${JOB_TIMEOUT_SEC}s (got: $timeout_line)"
+        fi
+    fi
+
+    # stdin from /dev/null: jobs must never block on a prompt, whether run
+    # by launchd or by a human from a terminal.
+    # Each job runs in its own process group so a timeout kills the whole
+    # tree, not just the direct child: the 2026-09-25 hang wedged a
+    # GRANDCHILD (mole's clean.sh) with 1.36s CPU in 60+ min, which a
+    # child-only kill would have orphaned. `set -m` makes the backgrounded
+    # job a group leader (pgid == pid); on timeout we TERM the group,
+    # grace, then KILL the group, and verify it is gone.
+    job_rc=0
+    job_timed_out=0
+    job_started_epoch="$(date +%s)"
+    dispatcher_pgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d '[:space:]' || true)"
+    set -m
+    bash "$job" < /dev/null >"$out_file" 2>"$err_file" &
+    job_pid=$!
+    set +m
+    # LOOK UP the real pgid — never assume pgid == pid — then hard-guard
+    # before any group signal: digits-only, > 1, not our own pgid, and equal
+    # to the job pid (the group-leader invariant set -m should give). Any
+    # failure disables the group kill and falls back to the single pid; a
+    # failed guard must never escalate into a broader kill. Silent here —
+    # the fallback is only logged if a timeout actually fires.
+    job_pgid="$(ps -o pgid= -p "$job_pid" 2>/dev/null | tr -d '[:space:]' || true)"
+    group_ok=0
+    if [[ "$job_pgid" =~ ^[0-9]+$ ]] && (( job_pgid > 1 )) \
+        && [[ -n "$dispatcher_pgid" && "$job_pgid" != "$dispatcher_pgid" && "$job_pgid" == "$job_pid" ]]; then
+        group_ok=1
+    fi
+    elapsed=0
+    while kill -0 "$job_pid" 2>/dev/null; do
+        if (( elapsed >= job_timeout )); then
+            # Deadline race: the job may have finished between the loop's
+            # liveness check and the deadline hit — re-check once before
+            # declaring a timeout, or a completed job reports as timed out.
+            if kill -0 "$job_pid" 2>/dev/null; then
+                job_timed_out=1
+            fi
+            break
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    if (( job_timed_out == 1 )); then
+        log_line "[run] job $job_name TIMED OUT after ${job_timeout}s (pid $job_pid pgid ${job_pgid:-unknown}); capturing stuck-tree diagnostics"
+        # One-shot diagnostics of the stuck tree, best-effort and bounded:
+        # a diagnostic failure must never hang or break the kill path below.
+        ps_file="$SCRATCH/ps-$JOB_COUNT.txt"
+        {
+            if [[ -n "$job_pgid" ]] && ps -g "$job_pgid" -o pid,ppid,etime,time,stat,command >"$ps_file" 2>/dev/null && [[ -s "$ps_file" ]]; then
+                while IFS= read -r psline || [[ -n "$psline" ]]; do
+                    log_line "[run] job $job_name stuck-tree: $psline"
+                done < "$ps_file"
+            else
+                log_line "[run] job $job_name stuck-tree: ps returned nothing for pgid ${job_pgid:-unknown}"
+            fi
+        } || true
+        {
+            if [[ -x /usr/bin/sample ]]; then
+                # Deepest descendant = a pid in the group that is nobody's
+                # ppid (a leaf); falls back to the job pid when unknown.
+                sample_target="$(awk 'NR>1 {pids[$1]=1; ppids[$2]=1} END {for (p in pids) {if (!(p in ppids)) {print p; exit}}} ' "$ps_file" 2>/dev/null || true)"
+                if [[ -z "$sample_target" ]]; then
+                    sample_target="$job_pid"
+                fi
+                sample_out="$SCRATCH/sample-$JOB_COUNT.txt"
+                : > "$sample_out"
+                /usr/bin/sample "$sample_target" 1 -mayDie >"$sample_out" 2>&1 &
+                sample_pid=$!
+                selapsed=0
+                while kill -0 "$sample_pid" 2>/dev/null && (( selapsed < 15 )); do
+                    sleep 1
+                    selapsed=$((selapsed + 1))
+                done
+                if kill -0 "$sample_pid" 2>/dev/null; then
+                    kill -KILL "$sample_pid" 2>/dev/null || true
+                    log_line "[run] job $job_name stuck-tree: sample of pid $sample_target timed out"
+                elif [[ -s "$sample_out" ]]; then
+                    while IFS= read -r sline || [[ -n "$sline" ]]; do
+                        log_line "[run] job $job_name sample($sample_target): $sline"
+                    done < <(head -n 20 "$sample_out")
+                else
+                    log_line "[run] job $job_name stuck-tree: sample of pid $sample_target produced no output"
+                fi
+            else
+                log_line "[run] job $job_name stuck-tree: /usr/bin/sample not present, skipping"
+            fi
+        } || true
+        # Kill the whole process GROUP (never just the direct child), TERM
+        # first then KILL after a grace period. Runs regardless of whether
+        # diagnostics above succeeded. EACH signal is gated on a fresh
+        # liveness + pgid re-verification: if the group already exited (and
+        # its pgid possibly recycled), the signal is skipped, never fired
+        # blind. When the group-leader invariant did not hold, only the
+        # single pid is signalled — never a group we did not verify.
+        timeout_how="process group killed"
+        if (( group_ok == 1 )); then
+            if job_still_ours "$job_pid" "$job_pgid"; then
+                kill -TERM -- -"$job_pgid" 2>/dev/null || true
+            else
+                log_line "[run] job $job_name TERM skipped: job already exited or pgid changed (pid $job_pid pgid ${job_pgid:-unknown})"
+            fi
+        else
+            timeout_how="single process killed (group kill unavailable)"
+            log_line "[run] job $job_name group-leader invariant not met (pid=$job_pid pgid=${job_pgid:-unknown} self-pgid=${dispatcher_pgid:-unknown}); group kill disabled, single-pid fallback"
+            if kill -0 "$job_pid" 2>/dev/null; then
+                kill -TERM "$job_pid" 2>/dev/null || true
+            else
+                log_line "[run] job $job_name TERM skipped: job already exited (pid $job_pid)"
+            fi
+        fi
+        grace=0
+        while kill -0 "$job_pid" 2>/dev/null && (( grace < JOB_KILL_GRACE_SEC )); do
+            sleep 1
+            grace=$((grace + 1))
+        done
+        if (( group_ok == 1 )); then
+            if kill -0 "$job_pid" 2>/dev/null || kill -0 -- -"$job_pgid" 2>/dev/null; then
+                if job_still_ours "$job_pid" "$job_pgid"; then
+                    kill -KILL -- -"$job_pgid" 2>/dev/null || true
+                    sleep 1
+                elif kill -0 "$job_pid" 2>/dev/null; then
+                    # Job pid alive but no longer in our group (pgid changed
+                    # under us): fall back to the single pid, never the group.
+                    log_line "[run] job $job_name pgid changed before KILL (pid $job_pid); single-pid KILL fallback"
+                    timeout_how="single process killed (group kill unavailable)"
+                    kill -KILL "$job_pid" 2>/dev/null || true
+                    sleep 1
+                else
+                    log_line "[run] job $job_name KILL skipped: job exited after TERM (pid $job_pid)"
+                fi
+            else
+                log_line "[run] job $job_name KILL skipped: job exited after TERM (pid $job_pid)"
+            fi
+        else
+            if kill -0 "$job_pid" 2>/dev/null; then
+                kill -KILL "$job_pid" 2>/dev/null || true
+                sleep 1
+            else
+                log_line "[run] job $job_name KILL skipped: job exited after TERM (pid $job_pid)"
+            fi
+        fi
+        wait "$job_pid" 2>/dev/null || true
+        job_rc=124
+        if (( group_ok == 1 )); then
+            if kill -0 "$job_pid" 2>/dev/null || kill -0 -- -"$job_pgid" 2>/dev/null; then
+                log_line "[run] job $job_name WARNING: process group $job_pgid may persist after KILL"
+            else
+                log_line "[run] job $job_name process group $job_pgid killed"
+            fi
+        else
+            if kill -0 "$job_pid" 2>/dev/null; then
+                log_line "[run] job $job_name WARNING: process $job_pid may persist after KILL"
+            else
+                log_line "[run] job $job_name process $job_pid killed (single-pid fallback)"
+            fi
+        fi
+    else
+        wait "$job_pid" || job_rc=$?
+    fi
+
+    log_line "[run] job $job_name rc=$job_rc"
+    record_run "$job_name" "$job_started_epoch" "$elapsed" "$job_rc" \
+        "$job_timed_out" "$DRY_RUN" "$out_file"
+    if [[ -s "$out_file" ]]; then
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            printf '%s [%s stdout] %s\n' "$(ts)" "$job_name" "$line" >> "$LOG_FILE"
+        done < "$out_file"
+    fi
+    if [[ -s "$err_file" ]]; then
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            printf '%s [%s stderr] %s\n' "$(ts)" "$job_name" "$line" >> "$LOG_FILE"
+        done < "$err_file"
+    fi
+    # A speaking job is one with stdout to show, a non-zero exit, or a
+    # timeout: a job that crashes quietly must still surface (name, exit
+    # code, stderr tail capped at 5 lines so a chatty failure cannot flood
+    # the alert), and a job that hangs must surface louder still. rc=0
+    # with stderr only stays log-only (see header comment).
+    job_spoke=0
+    if [[ -s "$out_file" ]]; then
+        printf '%s\n' "--- $job_name ---" >> "$SPEAK_FILE"
+        cat "$out_file" >> "$SPEAK_FILE"
+        job_spoke=1
+    fi
+    if (( job_timed_out == 1 )); then
+        if (( job_spoke == 0 )); then
+            printf '%s\n' "--- $job_name --- (TIMED OUT after ${job_timeout}s, $timeout_how)" >> "$SPEAK_FILE"
+        else
+            printf '%s\n' "[TIMED OUT after ${job_timeout}s, $timeout_how]" >> "$SPEAK_FILE"
+        fi
+        if [[ -s "$err_file" ]]; then
+            tail -n 5 "$err_file" >> "$SPEAK_FILE"
+        else
+            printf '%s\n' "(no stderr captured)" >> "$SPEAK_FILE"
+        fi
+        job_spoke=1
+    elif (( job_rc != 0 )); then
+        if (( job_spoke == 0 )); then
+            printf '%s\n' "--- $job_name --- (exit $job_rc)" >> "$SPEAK_FILE"
+        else
+            printf '%s\n' "[also exited $job_rc]" >> "$SPEAK_FILE"
+        fi
+        if [[ -s "$err_file" ]]; then
+            tail -n 5 "$err_file" >> "$SPEAK_FILE"
+        else
+            printf '%s\n' "(no stderr captured)" >> "$SPEAK_FILE"
+        fi
+        job_spoke=1
+    fi
+    if (( job_spoke == 1 )); then
+        SPEAK_COUNT=$((SPEAK_COUNT + 1))
+    fi
+done
+
+log_line "[run] finish tier=$TIER jobs=$JOB_COUNT speaking=$SPEAK_COUNT"
+
+if (( SPEAK_COUNT > 0 )); then
+    printf '[machine-ops] alerts (tier %s, %s) — %d of %d job(s) spoke:\n' \
+        "$TIER" "$RUN_TS" "$SPEAK_COUNT" "$JOB_COUNT"
+    cat "$SPEAK_FILE"
+fi
+
+exit 0

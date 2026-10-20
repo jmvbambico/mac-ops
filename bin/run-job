@@ -1,0 +1,289 @@
+#!/usr/bin/env bash
+#
+# bin/run-job — run exactly one machine-ops job.
+#
+# Usage: bin/run-job <path-to-job.sh>
+#
+# The machine-ops console manages one user LaunchAgent per enabled job, each
+# invoking this wrapper rather than the tier dispatcher:
+#   /bin/bash <repo>/bin/run-job <repo>/jobs/<file>.sh
+# so a job can run on its own schedule without also running its tier peers.
+#
+# Silent-on-success: a nominal run prints NOTHING. Captured job stdout IS the
+# alert channel (lib/common.sh flush_alerts output) and is re-printed under
+# the job's label. A non-zero exit or a timeout ALERTS; a clean exit 0 stays
+# silent even when the job wrote to stderr — the job itself decides what to
+# surface via stdout.
+#
+# The job's optional "# timeout: <secs>" on line 3 overrides the 900s default
+# (accepted 1..86400, same anchored parse/validation as bin/run). The job runs
+# in its own process group with stdin from /dev/null; on timeout the whole
+# group is TERM'd, given a short grace, then KILL'd. A timestamped one-line
+# summary always goes to logs/machine-ops.log, and captured job output goes
+# there too so a launchd-run job leaves a readable trail.
+#
+# Exit status is 0 after a completed run whether the job spoke or not — stdout
+# is the alert channel, not the exit code. Non-zero only when this wrapper
+# itself cannot run (bad arguments, unreadable job, unwritable log, or an
+# attempt to run as root/under sudo).
+#
+# Never run under sudo: mole refuses to run as root, and no job may prompt.
+
+set -u
+
+# launchd starts with a minimal PATH; pin a full one, defensively.
+export PATH="/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+usage() {
+    printf 'Usage: %s <path-to-job.sh>\n' "$(basename "$0")" >&2
+}
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+LOG_DIR="$REPO_ROOT/logs"
+LOG_FILE="$LOG_DIR/machine-ops.log"
+export MACHINE_OPS_LOG="$LOG_FILE"
+
+# Per-job wall-clock timeout, matching bin/run's default. A job may override
+# it with "# timeout: <secs>" on line 3.
+JOB_TIMEOUT_SEC=900
+# Grace between TERM and KILL when a timed-out job's process group is killed.
+JOB_KILL_GRACE_SEC=5
+
+# shellcheck disable=SC1091 # path resolved at runtime from the script location
+if ! source "$REPO_ROOT/lib/common.sh"; then
+    printf 'bin/run-job: cannot load lib/common.sh\n' >&2
+    exit 1
+fi
+
+if (( $# != 1 )); then
+    usage
+    exit 2
+fi
+
+job_file="$1"
+
+# Refuse root/sudo outright: these jobs are for the logged-in user, and mole
+# will not run as root anyway.
+if [[ "${EUID:-$(id -u)}" -eq 0 || -n "${SUDO_USER:-}" ]]; then
+    printf 'bin/run-job: refusing to run as root or under sudo\n' >&2
+    exit 1
+fi
+
+if [[ ! -f "$job_file" || ! -r "$job_file" ]]; then
+    printf 'bin/run-job: job file missing or unreadable: %s\n' "$job_file" >&2
+    exit 1
+fi
+
+job_name="$(basename "$job_file")"
+job_label="${job_name%.sh}"
+
+if ! mkdir -p "$LOG_DIR" 2>/dev/null; then
+    printf 'bin/run-job: cannot create log directory: %s\n' "$LOG_DIR" >&2
+    exit 1
+fi
+if ! touch "$LOG_FILE" 2>/dev/null; then
+    printf 'bin/run-job: cannot write log file: %s\n' "$LOG_FILE" >&2
+    exit 1
+fi
+
+# The tier line is informational here — the console selected this job
+# directly. Parse it with the same anchored rule as bin/run so a stray
+# `echo "# tier: daily"` cannot be mistaken for metadata.
+tier_line="$(sed -n '2p' "$job_file" 2>/dev/null || true)"
+job_tier=""
+if [[ "$tier_line" =~ ^[[:space:]]*#[[:space:]]*tier:[[:space:]]*([a-z]+)[[:space:]]*$ ]]; then
+    job_tier="${BASH_REMATCH[1]}"
+fi
+
+# Per-job timeout override is OPTIONAL on line 3 ("# timeout: <secs>").
+# Missing or malformed line 3 silently means "use the default" (log-only
+# note), matching bin/run. Anchored so executable code can never be mistaken
+# for metadata. Accepted range is 1..86400 (24h): anything outside falls back
+# to the default so "no job may hang forever" always holds.
+job_timeout="$JOB_TIMEOUT_SEC"
+timeout_line="$(sed -n '3p' "$job_file" 2>/dev/null || true)"
+if [[ "$timeout_line" =~ ^[[:space:]]*#[[:space:]]*timeout:[[:space:]]*([0-9]+)[[:space:]]*$ ]]; then
+    timeout_val="${BASH_REMATCH[1]}"
+    # Length guard BEFORE any arithmetic: strip leading zeros, then a
+    # >5-digit remainder exceeds 86400 by construction.
+    timeout_stripped="$(printf '%s' "$timeout_val" | sed 's/^0*//')"
+    if [[ -z "$timeout_stripped" ]]; then
+        timeout_stripped="0"
+    fi
+    if [[ "${#timeout_stripped}" -gt 5 ]]; then
+        log_line "[run-job] job $job_name has out-of-range timeout line 3, using default ${JOB_TIMEOUT_SEC}s (got: $timeout_line)"
+    elif (( 10#$timeout_stripped >= 1 && 10#$timeout_stripped <= 86400 )); then
+        job_timeout=$((10#$timeout_stripped))
+    else
+        log_line "[run-job] job $job_name has out-of-range timeout line 3, using default ${JOB_TIMEOUT_SEC}s (got: $timeout_line)"
+    fi
+elif printf '%s' "$timeout_line" | grep -qi -E '^[[:space:]]*#[[:space:]]*timeout'; then
+    log_line "[run-job] job $job_name has malformed timeout line 3, using default ${JOB_TIMEOUT_SEC}s (got: $timeout_line)"
+fi
+
+SCRATCH="$(mktemp -d 2>/dev/null)" || {
+    printf 'bin/run-job: cannot create temp dir\n' >&2
+    exit 1
+}
+# shellcheck disable=SC2064
+trap "rm -rf '$SCRATCH'" EXIT
+
+out_file="$SCRATCH/out.txt"
+err_file="$SCRATCH/err.txt"
+: > "$out_file"
+: > "$err_file"
+
+# job_still_ours <pid> <expected-pgid> — true iff pid is alive AND still in
+# the expected process group. Re-checked before EACH kill signal so a reused
+# numeric pgid can never receive a blind signal.
+job_still_ours() {
+    local _pid="$1" _pgid="$2" _cur
+    kill -0 "$_pid" 2>/dev/null || return 1
+    _cur="$(ps -o pgid= -p "$_pid" 2>/dev/null | tr -d '[:space:]' || true)"
+    [[ -n "$_cur" && "$_cur" == "$_pgid" ]]
+}
+
+run_started_epoch="$(date +%s)"
+log_line "[run-job] start job=$job_name tier=${job_tier:-unknown} timeout=${job_timeout}s"
+
+# stdin from /dev/null: jobs must never block on a prompt, whether run by
+# launchd or by a human. Each job runs in its own process group so a timeout
+# kills the whole tree, not just the direct child: `set -m` makes the
+# backgrounded job a group leader (pgid == pid).
+job_rc=0
+job_timed_out=0
+dispatcher_pgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d '[:space:]' || true)"
+set -m
+bash "$job_file" < /dev/null >"$out_file" 2>"$err_file" &
+job_pid=$!
+set +m
+# LOOK UP the real pgid — never assume pgid == pid — then hard-guard before
+# any group signal: digits-only, > 1, not our own pgid, and equal to the job
+# pid (the group-leader invariant set -m should give). Any failure disables
+# the group kill and falls back to the single pid.
+job_pgid="$(ps -o pgid= -p "$job_pid" 2>/dev/null | tr -d '[:space:]' || true)"
+group_ok=0
+if [[ "$job_pgid" =~ ^[0-9]+$ ]] && (( job_pgid > 1 )) \
+    && [[ -n "$dispatcher_pgid" && "$job_pgid" != "$dispatcher_pgid" && "$job_pgid" == "$job_pid" ]]; then
+    group_ok=1
+fi
+elapsed=0
+while kill -0 "$job_pid" 2>/dev/null; do
+    if (( elapsed >= job_timeout )); then
+        # Deadline race: the job may have finished between the loop's
+        # liveness check and the deadline hit — re-check once.
+        if kill -0 "$job_pid" 2>/dev/null; then
+            job_timed_out=1
+        fi
+        break
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+done
+
+timeout_how="process group killed"
+if (( job_timed_out == 1 )); then
+    log_line "[run-job] job $job_name TIMED OUT after ${job_timeout}s (pid $job_pid pgid ${job_pgid:-unknown})"
+    # Kill the whole process GROUP (never just the direct child), TERM first
+    # then KILL after a short grace. Each signal is gated on a fresh liveness
+    # + pgid re-verification; when the group-leader invariant did not hold,
+    # only the single pid is signalled — never a group we did not verify.
+    if (( group_ok == 1 )); then
+        if job_still_ours "$job_pid" "$job_pgid"; then
+            kill -TERM -- -"$job_pgid" 2>/dev/null || true
+        else
+            log_line "[run-job] job $job_name TERM skipped: job already exited or pgid changed (pid $job_pid pgid ${job_pgid:-unknown})"
+        fi
+    else
+        timeout_how="single process killed (group kill unavailable)"
+        log_line "[run-job] job $job_name group-leader invariant not met (pid=$job_pid pgid=${job_pgid:-unknown} self-pgid=${dispatcher_pgid:-unknown}); single-pid fallback"
+        if kill -0 "$job_pid" 2>/dev/null; then
+            kill -TERM "$job_pid" 2>/dev/null || true
+        else
+            log_line "[run-job] job $job_name TERM skipped: job already exited (pid $job_pid)"
+        fi
+    fi
+    grace=0
+    while kill -0 "$job_pid" 2>/dev/null && (( grace < JOB_KILL_GRACE_SEC )); do
+        sleep 1
+        grace=$((grace + 1))
+    done
+    if (( group_ok == 1 )); then
+        if kill -0 "$job_pid" 2>/dev/null || kill -0 -- -"$job_pgid" 2>/dev/null; then
+            if job_still_ours "$job_pid" "$job_pgid"; then
+                kill -KILL -- -"$job_pgid" 2>/dev/null || true
+                sleep 1
+            elif kill -0 "$job_pid" 2>/dev/null; then
+                # Job pid alive but no longer in our group: fall back to the
+                # single pid, never the group.
+                log_line "[run-job] job $job_name pgid changed before KILL (pid $job_pid); single-pid KILL fallback"
+                timeout_how="single process killed (group kill unavailable)"
+                kill -KILL "$job_pid" 2>/dev/null || true
+                sleep 1
+            else
+                log_line "[run-job] job $job_name KILL skipped: job exited after TERM (pid $job_pid)"
+            fi
+        else
+            log_line "[run-job] job $job_name KILL skipped: job exited after TERM (pid $job_pid)"
+        fi
+    else
+        if kill -0 "$job_pid" 2>/dev/null; then
+            kill -KILL "$job_pid" 2>/dev/null || true
+            sleep 1
+        else
+            log_line "[run-job] job $job_name KILL skipped: job exited after TERM (pid $job_pid)"
+        fi
+    fi
+    wait "$job_pid" 2>/dev/null || true
+    job_rc=124
+else
+    wait "$job_pid" || job_rc=$?
+fi
+
+# Detail goes to the run log; stdout below is the alert channel.
+if [[ -s "$out_file" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        printf '%s [%s stdout] %s\n' "$(ts)" "$job_name" "$line" >> "$LOG_FILE"
+    done < "$out_file"
+fi
+if [[ -s "$err_file" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        printf '%s [%s stderr] %s\n' "$(ts)" "$job_name" "$line" >> "$LOG_FILE"
+    done < "$err_file"
+fi
+log_line "[run-job] finish job=$job_name rc=$job_rc timeout=$job_timed_out tier=${job_tier:-unknown} elapsed=${elapsed}s"
+
+# Structured record for the console's index. Best-effort by construction:
+# record_run never fails the caller and never writes to stdout.
+record_run "$job_name" "$run_started_epoch" "$elapsed" "$job_rc" \
+    "$job_timed_out" "${MACHINE_OPS_DRY_RUN:-0}" "$out_file"
+
+# Captured job stdout is already the alert channel (the job's flush_alerts
+# output); re-emit it under the job's label. A crashed or timed-out job that
+# said nothing still surfaces: the alert names the job, the outcome, and a
+# capped stderr tail. A clean rc=0 run with stderr only stays silent.
+if [[ -s "$out_file" ]]; then
+    alert "$(cat "$out_file")"
+fi
+if (( job_timed_out == 1 )); then
+    alert "[TIMED OUT after ${job_timeout}s limit; ${timeout_how}]"
+    if [[ -s "$err_file" ]]; then
+        alert "$(tail -n 5 "$err_file")"
+    else
+        alert "(no stderr captured)"
+    fi
+elif (( job_rc != 0 )); then
+    if [[ -s "$out_file" ]]; then
+        alert "[also exited $job_rc]"
+    else
+        alert "job exited $job_rc"
+    fi
+    if [[ -s "$err_file" ]]; then
+        alert "$(tail -n 5 "$err_file")"
+    else
+        alert "(no stderr captured)"
+    fi
+fi
+flush_alerts "$job_label"
+
+exit 0

@@ -1,0 +1,11 @@
+# Build artifacts
+console/node_modules/
+console/dist/
+console/src-tauri/target/
+console/src-tauri/gen/
+
+# Runtime — MacOps never commits run output or local state.
+logs/
+state/
+
+.DS_Store
