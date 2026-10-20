@@ -73,6 +73,10 @@ jobs:
         if: ${{ !cancelled() }}
         run: 'cd console && npm ci --silent && npx tsc --noEmit'
 
+      - name: frontend-test
+        if: ${{ !cancelled() }}
+        run: 'cd console && npm ci --silent && npm run test'
+
       - name: frontend-build
         if: ${{ !cancelled() }}
         run: 'cd console && npm run build'

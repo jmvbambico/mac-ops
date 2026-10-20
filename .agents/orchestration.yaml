@@ -33,6 +33,10 @@ gates:
     run: "cd console && npm ci --silent && npx tsc --noEmit"
     scope: worker
 
+  - name: frontend-test
+    run: "cd console && npm ci --silent && npm run test"
+    scope: worker
+
   # Integration-only: slower, and shares the npm/cargo cache.
   - name: frontend-build
     run: "cd console && npm run build"
