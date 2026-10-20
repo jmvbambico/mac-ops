@@ -42,9 +42,17 @@ export const S = {
   paths: idle<ResolvedPathsInfo>(),
   /**
    * Inline state for the Settings root editor. `draft` keeps a rejected value
-   * visible instead of snapping the input back to the old root.
+   * visible instead of snapping the input back to the old root. `saved` is the
+   * value the last successful save wrote to `config.json`; when an environment
+   * override is active it differs from the effective root, and the panel shows
+   * both rather than letting the saved value disappear.
    */
-  pathsEdit: { error: null as string | null, busy: false, draft: null as string | null },
+  pathsEdit: {
+    error: null as string | null,
+    busy: false,
+    draft: null as string | null,
+    saved: null as string | null,
+  },
 
   // navigation
   view: "overview" as ViewName,
@@ -196,6 +204,11 @@ export async function saveAutomationsRoot(path: string): Promise<boolean> {
     S.paths = { data: resolved, error: null, loading: false };
     S.pathsEdit.error = null;
     S.pathsEdit.draft = null;
+    // Remember what was persisted so the panel can show the config value even
+    // when an env override keeps it inactive. Without an override the
+    // re-resolved root IS the config value; with one, the backend still wrote
+    // the trimmed input, so keep that.
+    S.pathsEdit.saved = resolved.source === "env" ? path.trim() : resolved.automations_root;
     toast("Automations root saved — restart the console to apply it", "ok");
     return true;
   } catch (err) {

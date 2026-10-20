@@ -35,12 +35,17 @@ export function vSettings(): string {
 
   <div class="sec-h"><h3>Paths</h3><span class="ln"></span></div>
   <div class="card pad col" style="gap:11px">
-    ${asyncPanel(S.paths, "Resolved paths unavailable", "paths", (p) => `
+    ${asyncPanel(S.paths, "Resolved paths unavailable", "paths", (p) => {
+      // Only when the config file disagrees with the effective root (i.e. an
+      // env override is winning). When they match, one path is enough.
+      const saved = S.pathsEdit.saved && S.pathsEdit.saved !== p.automations_root ? S.pathsEdit.saved : null;
+      return `
     <dl class="kv">
       <dt>Tool root</dt><dd class="mono">${esc(p.tool_root)}</dd>
       <dt>Automations root</dt><dd class="mono">${esc(p.automations_root)}${
         p.source ? `<span class="badge tier" style="margin-left:5px">${esc(p.source)}</span>` : ""
       }</dd>
+      ${saved ? `<dt>Saved in config.json</dt><dd class="mono">${esc(saved)}</dd>` : ""}
       <dt>Config file</dt><dd class="mono">${esc(p.config_path)}</dd>
     </dl>
     ${
@@ -78,7 +83,8 @@ export function vSettings(): string {
       from the GUI. The automations root comes from <span class="mono">MOPS_AUTOMATIONS_ROOT</span>,
       then the <span class="mono">automations_root</span> key in
       <span class="mono">~/.config/mops/config.json</span>, then <span class="mono">~/.mops</span>.
-      A checkout used in place (jobs/ beside bin/) is a supported automations root.</div>`)}
+      A checkout used in place (jobs/ beside bin/) is a supported automations root.</div>`;
+    })}
   </div>
 
   <div class="sec-h"><h3>Run database</h3><span class="ln"></span></div>
