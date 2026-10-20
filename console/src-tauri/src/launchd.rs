@@ -195,19 +195,31 @@ fn start_key(sched: &Schedule) -> String {
     }
 }
 
-/// Render the plist. Must set: ProgramArguments
-/// ["/bin/bash", "<root>/bin/run-job", "<root>/jobs/<file>"],
-/// WorkingDirectory, RunAtLoad=false, no KeepAlive, an explicit PATH
-/// including /opt/homebrew/bin (launchd's PATH is minimal), HOME, and
-/// StandardOut/ErrorPath at logs/job-<slug>.out.log / .err.log.
+/// Render the plist. The two roots are independent (AGENTS.md Principle II):
+/// the wrapper and `lib/` come from the TOOL root, while the job script,
+/// working directory and logs belong to the AUTOMATIONS root.
+///
+/// Must set: ProgramArguments
+/// ["/bin/bash", "<tool>/bin/run-job", "<automations>/jobs/<file>"],
+/// WorkingDirectory=<automations>, RunAtLoad=false, no KeepAlive, an explicit
+/// PATH including /opt/homebrew/bin (launchd's PATH is minimal), HOME, and
+/// StandardOut/ErrorPath at <automations>/logs/job-<slug>.out.log / .err.log.
 ///
 /// Schedule mapping: Daily -> StartCalendarInterval dict (or an array when
 /// there are several times); Weekly -> array with Weekday; Interval ->
 /// StartInterval seconds; Manual -> no start key at all (never scheduled).
-pub fn plist_xml(root: &Path, job_file: &str, sched: &Schedule) -> Result<String> {
-    let root_s = root
+pub fn plist_xml(
+    tool_root: &Path,
+    automations_root: &Path,
+    job_file: &str,
+    sched: &Schedule,
+) -> Result<String> {
+    let tool_s = tool_root
         .to_str()
-        .ok_or_else(|| anyhow::anyhow!("repo root is not valid UTF-8: {}", root.display()))?;
+        .ok_or_else(|| anyhow::anyhow!("tool root is not valid UTF-8: {}", tool_root.display()))?;
+    let auto_s = automations_root.to_str().ok_or_else(|| {
+        anyhow::anyhow!("automations root is not valid UTF-8: {}", automations_root.display())
+    })?;
     // The plist names <root>/jobs/<file>, so the filename must be a plain
     // basename: no traversal, no absolute path, nothing to escape jobs/.
     let base = job_file.rsplit('/').next().unwrap_or(job_file);
@@ -218,7 +230,8 @@ pub fn plist_xml(root: &Path, job_file: &str, sched: &Schedule) -> Result<String
     let label = label_for(base);
     let home = std::env::var("HOME").unwrap_or_default();
 
-    let root_x = xml_escape(root_s);
+    let tool_x = xml_escape(tool_s);
+    let auto_x = xml_escape(auto_s);
     let xml = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -229,17 +242,17 @@ pub fn plist_xml(root: &Path, job_file: &str, sched: &Schedule) -> Result<String
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>{root_x}/bin/run-job</string>
-        <string>{root_x}/jobs/{file}</string>
+        <string>{tool_x}/bin/run-job</string>
+        <string>{auto_x}/jobs/{file}</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>{root_x}</string>
+    <string>{auto_x}</string>
 {start}    <key>RunAtLoad</key>
     <false/>
     <key>StandardOutPath</key>
-    <string>{root_x}/logs/job-{slug}.out.log</string>
+    <string>{auto_x}/logs/job-{slug}.out.log</string>
     <key>StandardErrorPath</key>
-    <string>{root_x}/logs/job-{slug}.err.log</string>
+    <string>{auto_x}/logs/job-{slug}.err.log</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
@@ -286,15 +299,21 @@ fn is_not_loaded(msg: &str) -> bool {
 
 /// Write the plist to ~/Library/LaunchAgents and bootstrap it. Idempotent:
 /// bootout any previous copy first, ignoring "not loaded" errors.
-pub fn install(root: &Path, job_file: &str, sched: &Schedule) -> Result<()> {
-    let xml = plist_xml(root, job_file, sched)?;
+pub fn install(
+    tool_root: &Path,
+    automations_root: &Path,
+    job_file: &str,
+    sched: &Schedule,
+) -> Result<()> {
+    let xml = plist_xml(tool_root, automations_root, job_file, sched)?;
     let dest = plist_path(job_file)?;
     let dir = dest.parent().expect("plist path always has a parent");
     std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
     // launchd refuses to start a job whose StandardOutPath directory is
     // missing, so make sure logs/ exists before bootstrapping.
-    std::fs::create_dir_all(root.join("logs"))
-        .with_context(|| format!("create {}", root.join("logs").display()))?;
+    let logs = crate::paths::logs_dir(automations_root);
+    std::fs::create_dir_all(&logs)
+        .with_context(|| format!("create {}", logs.display()))?;
 
     // Write the plist atomically too: launchd may read it the instant we
     // bootstrap, and a truncated plist is a job that never runs.
@@ -372,7 +391,7 @@ mod tests {
     const ROOT: &str = "/Users/someone/projects/machine-ops";
 
     fn xml(sched: &Schedule) -> String {
-        plist_xml(Path::new(ROOT), "30-brew-update.sh", sched).unwrap()
+        plist_xml(Path::new(ROOT), Path::new(ROOT), "30-brew-update.sh", sched).unwrap()
     }
 
     #[test]
@@ -525,6 +544,7 @@ mod tests {
     fn paths_and_names_are_xml_escaped() {
         let x = plist_xml(
             Path::new("/Users/a&b/machine-ops"),
+            Path::new("/Users/a&b/machine-ops"),
             "30-a<b>.sh",
             &Schedule::Manual,
         )
@@ -535,8 +555,38 @@ mod tests {
     }
 
     #[test]
+    fn plist_straddles_tool_and_automations_roots() {
+        let tool = "/opt/macops-tool";
+        let auto = "/var/macops-automations";
+        let x = plist_xml(
+            Path::new(tool),
+            Path::new(auto),
+            "30-brew-update.sh",
+            &Schedule::Manual,
+        )
+        .unwrap();
+        // The wrapper comes from the tool; the job and its output from the
+        // user's automations directory. Nothing user-owned under the tool.
+        assert!(x.contains(&format!("<string>{tool}/bin/run-job</string>")));
+        assert!(x.contains(&format!("<string>{auto}/jobs/30-brew-update.sh</string>")));
+        assert!(x.contains(&format!(
+            "<key>WorkingDirectory</key>\n    <string>{auto}</string>"
+        )));
+        assert!(x.contains(&format!(
+            "<key>StandardOutPath</key>\n    <string>{auto}/logs/job-brew-update.out.log</string>"
+        )));
+        assert!(x.contains(&format!(
+            "<key>StandardErrorPath</key>\n    <string>{auto}/logs/job-brew-update.err.log</string>"
+        )));
+        assert!(!x.contains(&format!("{tool}/logs")), "logs are user data");
+        assert!(!x.contains(&format!("{tool}/jobs")), "jobs are user data");
+    }
+
+    #[test]
     fn traversal_filenames_are_rejected() {
-        assert!(plist_xml(Path::new(ROOT), "../../evil.sh", &Schedule::Manual).is_err());
+        assert!(
+            plist_xml(Path::new(ROOT), Path::new(ROOT), "../../evil.sh", &Schedule::Manual).is_err()
+        );
     }
 
     #[test]

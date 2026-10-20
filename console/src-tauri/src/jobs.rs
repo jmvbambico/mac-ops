@@ -131,6 +131,8 @@ fn infer_kind(content: &str) -> String {
 // Discovery
 // ---------------------------------------------------------------------------
 
+/// `root` is the AUTOMATIONS root, never the tool root: job scripts are the
+/// user's data and live outside the installed tool.
 fn jobs_dir(root: &Path) -> PathBuf {
     root.join("jobs")
 }
@@ -356,8 +358,12 @@ fn header(file: &str, tier: &str, timeout: u32, kind: &str, title: &str, doc: &[
     s.push_str("# could prompt.\n");
     s.push_str("\nset -u\n\n");
     s.push_str("SCRIPT_DIR=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")\" && pwd)\"\n");
-    s.push_str("# shellcheck disable=SC1091 # path resolved at runtime from the script location\n");
-    s.push_str("if ! source \"$SCRIPT_DIR/../lib/common.sh\"; then\n");
+    s.push_str("# lib/common.sh belongs to the TOOL root, which may differ from this job's\n");
+    s.push_str("# automations root. bin/run and bin/run-job export MACHINE_OPS_TOOL_ROOT;\n");
+    s.push_str("# the fallback keeps a checkout used in place (same root) working.\n");
+    s.push_str("MACOPS_LIB=\"${MACHINE_OPS_TOOL_ROOT:-$SCRIPT_DIR/..}/lib\"\n");
+    s.push_str("# shellcheck disable=SC1091 # path resolved at runtime from the tool root\n");
+    s.push_str("if ! source \"$MACOPS_LIB/common.sh\"; then\n");
     s.push_str(&format!(
         "    printf '{}: cannot load lib/common.sh\\n' >&2\n",
         file.strip_suffix(".sh").unwrap_or(file)
@@ -1242,12 +1248,17 @@ fn split_keep_terminators(data: &[u8]) -> Vec<Vec<u8>> {
 /// stdin MUST be /dev/null. `dry` sets MACHINE_OPS_DRY_RUN=1.
 /// bin/run-job exits 0 even when the job speaks — stdout is the alert
 /// channel, not the exit code — so derive Status via Status::derive.
-pub fn run(root: &Path, file: &str, dry: bool) -> Result<RunOutcome> {
-    let runner = root.join("bin/run-job");
+///
+/// `tool_root` supplies `bin/run-job`; `automations_root` supplies the job
+/// script. The child's working directory is the AUTOMATIONS root: any
+/// relative path a job writes is user data, and must never land inside the
+/// tool's install directory (Principle II).
+pub fn run(tool_root: &Path, automations_root: &Path, file: &str, dry: bool) -> Result<RunOutcome> {
+    let runner = crate::paths::run_job_path(tool_root);
     if !runner.is_file() {
         bail!("bin/run-job missing at {}", runner.display());
     }
-    let job = jobs_dir(root).join(file);
+    let job = jobs_dir(automations_root).join(file);
     if !job.is_file() {
         bail!("job script missing at {}", job.display());
     }
@@ -1257,7 +1268,9 @@ pub fn run(root: &Path, file: &str, dry: bool) -> Result<RunOutcome> {
     let out = Command::new("/bin/bash")
         .arg(&runner)
         .arg(&job)
-        .current_dir(root)
+        .current_dir(automations_root)
+        .env("MACHINE_OPS_TOOL_ROOT", tool_root)
+        .env("MACHINE_OPS_AUTOMATIONS_ROOT", automations_root)
         .env("MACHINE_OPS_DRY_RUN", if dry { "1" } else { "0" })
         .stdin(Stdio::null()) // no job may ever prompt
         .stdout(Stdio::piped())
@@ -1570,7 +1583,12 @@ mod tests {
             assert!(text.starts_with("#!/usr/bin/env bash\n"), "{}", why("shebang"));
             assert!(text.contains("\nset -u\n"), "{}", why("set -u"));
             assert!(
-                text.contains("source \"$SCRIPT_DIR/../lib/common.sh\""),
+                text.contains("MACOPS_LIB=\"${MACHINE_OPS_TOOL_ROOT:-$SCRIPT_DIR/..}/lib\""),
+                "{}",
+                why("tool-root-relative MACOPS_LIB")
+            );
+            assert!(
+                text.contains("source \"$MACOPS_LIB/common.sh\""),
                 "{}",
                 why("lib/common.sh source")
             );
@@ -1660,6 +1678,10 @@ mod tests {
                 .env("MACHINE_OPS_FORCE_OFFLINE", "1") // offline must be silent
                 .env("MACHINE_OPS_MOLE", &stub)
                 .env("MACHINE_OPS_PKG_BIN", &stub)
+                // Keep the child hermetic: the template must find lib/ via the
+                // same-root fallback, not a tool root another test set.
+                .env_remove("MACHINE_OPS_TOOL_ROOT")
+                .env_remove("MACHINE_OPS_AUTOMATIONS_ROOT")
                 .stdin(Stdio::null())
                 .output()
                 .unwrap();
@@ -1718,6 +1740,8 @@ mod tests {
             .env("MACHINE_OPS_PKG_BIN", &stub)
             .env_remove("MACHINE_OPS_DRY_RUN")
             .env_remove("MACHINE_OPS_FORCE_OFFLINE")
+            .env_remove("MACHINE_OPS_TOOL_ROOT")
+            .env_remove("MACHINE_OPS_AUTOMATIONS_ROOT")
             .stdin(Stdio::null())
             .output()
             .unwrap();
@@ -1735,6 +1759,8 @@ mod tests {
             .env("MACHINE_OPS_LOG", &log)
             .env("MACHINE_OPS_PKG_BIN", &stub)
             .env("STUB_FAIL", "1")
+            .env_remove("MACHINE_OPS_TOOL_ROOT")
+            .env_remove("MACHINE_OPS_AUTOMATIONS_ROOT")
             .stdin(Stdio::null())
             .output()
             .unwrap();
@@ -1960,13 +1986,16 @@ mod tests {
     #[test]
     fn run_derives_status_from_stdout_not_the_exit_code() {
         let t = Tmp::new("run");
-        std::fs::create_dir_all(t.root().join("bin")).unwrap();
-        std::fs::create_dir_all(t.root().join("lib")).unwrap();
+        // The wrapper lives in a SEPARATE tool root; the job script lives in
+        // the automations root. This is the split under test.
+        let tool = t.root().join("tool");
+        std::fs::create_dir_all(tool.join("bin")).unwrap();
+        std::fs::create_dir_all(tool.join("lib")).unwrap();
         // A stub run-job: exits 0 always, speaks only what the fixture file
         // says — exactly the trap this contract exists to avoid. The fixture
         // is a file, not an env var, so parallel tests cannot race on it.
         std::fs::write(
-            t.root().join("bin/run-job"),
+            tool.join("bin/run-job"),
             "#!/usr/bin/env bash\nset -u\ncat \"$(dirname \"$0\")/../say.txt\"\nexit 0\n",
         )
         .unwrap();
@@ -1980,8 +2009,8 @@ mod tests {
             ("== 10-stub ==\n[TIMED OUT after 900s limit; process group killed]\n", Status::Hang, 124),
         ];
         for (say, want_status, want_rc) in cases {
-            std::fs::write(t.root().join("say.txt"), say).unwrap();
-            let out = run(t.root(), "10-stub.sh", false).unwrap();
+            std::fs::write(tool.join("say.txt"), say).unwrap();
+            let out = run(&tool, t.root(), "10-stub.sh", false).unwrap();
             assert_eq!(out.status, want_status, "stdout {say:?}");
             assert_eq!(out.rc, want_rc, "stdout {say:?}");
             assert_eq!(out.timed_out, want_status == Status::Hang);
@@ -1989,14 +2018,14 @@ mod tests {
 
         // Dry run passes the flag through.
         std::fs::write(
-            t.root().join("bin/run-job"),
+            tool.join("bin/run-job"),
             "#!/usr/bin/env bash\nset -u\nprintf 'dry=%s\\n' \"${MACHINE_OPS_DRY_RUN:-unset}\"\nexit 0\n",
         )
         .unwrap();
-        assert!(run(t.root(), "10-stub.sh", true).unwrap().stdout.contains("dry=1"));
-        assert!(run(t.root(), "10-stub.sh", false).unwrap().stdout.contains("dry=0"));
+        assert!(run(&tool, t.root(), "10-stub.sh", true).unwrap().stdout.contains("dry=1"));
+        assert!(run(&tool, t.root(), "10-stub.sh", false).unwrap().stdout.contains("dry=0"));
 
         // A missing job or missing wrapper is an error, not a silent "quiet".
-        assert!(run(t.root(), "99-missing.sh", false).is_err());
+        assert!(run(&tool, t.root(), "99-missing.sh", false).is_err());
     }
 }
