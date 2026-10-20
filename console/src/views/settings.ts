@@ -44,8 +44,8 @@ export function vSettings(): string {
       <dt>Config file</dt><dd class="mono">${esc(p.config_path)}</dd>
     </dl>
     <div class="muted" style="font-size:11.5px">Read-only diagnostics. The tool root comes from
-      <span class="mono">MACHINE_OPS_TOOL_ROOT</span> or the executable's own location. The automations root
-      comes from <span class="mono">MACHINE_OPS_AUTOMATIONS_ROOT</span>, then the
+      <span class="mono">MOPS_TOOL_ROOT</span> or the executable's own location. The automations root
+      comes from <span class="mono">MOPS_AUTOMATIONS_ROOT</span>, then the
       <span class="mono">automations_root</span> key in
       <span class="mono">~/.config/mops/config.json</span>, then <span class="mono">~/.mops</span>.
       Neither root is editable from the GUI.</div>`)}
