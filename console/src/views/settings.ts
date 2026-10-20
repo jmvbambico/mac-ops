@@ -5,7 +5,7 @@
 import { IC } from "../icons";
 import { esc, groupsOf, localLoadProfile } from "../format";
 import { S, jobs } from "../store";
-import { asyncPanel } from "./common";
+import { asyncPanel, inlineErr } from "./common";
 
 export function vSettings(): string {
   const all = jobs();
@@ -35,20 +35,56 @@ export function vSettings(): string {
 
   <div class="sec-h"><h3>Paths</h3><span class="ln"></span></div>
   <div class="card pad col" style="gap:11px">
-    ${asyncPanel(S.paths, "Resolved paths unavailable", "paths", (p) => `
+    ${asyncPanel(S.paths, "Resolved paths unavailable", "paths", (p) => {
+      // Only when the config file disagrees with the effective root (i.e. an
+      // env override is winning). When they match, one path is enough.
+      const saved = S.pathsEdit.saved && S.pathsEdit.saved !== p.automations_root ? S.pathsEdit.saved : null;
+      return `
     <dl class="kv">
       <dt>Tool root</dt><dd class="mono">${esc(p.tool_root)}</dd>
       <dt>Automations root</dt><dd class="mono">${esc(p.automations_root)}${
         p.source ? `<span class="badge tier" style="margin-left:5px">${esc(p.source)}</span>` : ""
       }</dd>
+      ${saved ? `<dt>Saved in config.json</dt><dd class="mono">${esc(saved)}</dd>` : ""}
       <dt>Config file</dt><dd class="mono">${esc(p.config_path)}</dd>
     </dl>
-    <div class="muted" style="font-size:11.5px">Read-only diagnostics. The tool root comes from
-      <span class="mono">MOPS_TOOL_ROOT</span> or the executable's own location. The automations root
-      comes from <span class="mono">MOPS_AUTOMATIONS_ROOT</span>, then the
-      <span class="mono">automations_root</span> key in
+    ${
+      p.source === "env"
+        ? `<div class="note" style="background:var(--spoke-bg)">
+            <span style="color:var(--spoke);flex:0 0 auto">${IC.warn}</span>
+            <div><b><span class="mono">MOPS_AUTOMATIONS_ROOT</span> is set and overrides the config file.</b>
+              Saving here records your choice in
+              <span class="mono">config.json</span>, but the effective root stays
+              <span class="mono">${esc(p.automations_root)}</span> until you unset that variable
+              (and restart).</div>
+          </div>`
+        : ""
+    }
+    <div class="field" style="margin:0">
+      <label for="root-input">Set the automations root</label>
+      <div class="row" style="gap:7px;flex-wrap:wrap">
+        <input class="inp mono" id="root-input" value="${esc(S.pathsEdit.draft ?? p.automations_root)}"
+          spellcheck="false" autocomplete="off" style="flex:1 1 260px;min-width:190px">
+        <button class="btn pri" data-set-root ${S.pathsEdit.busy ? "disabled" : ""}>
+          ${S.pathsEdit.busy ? `${IC.refresh} Saving…` : `${IC.check} Save root`}</button>
+      </div>
+      <div class="hint">Absolute path. A directory that does not exist yet is created with
+        <span class="mono">jobs/</span>, <span class="mono">logs/</span> and
+        <span class="mono">state/</span>.</div>
+      ${S.pathsEdit.error ? inlineErr("Could not save the automations root", S.pathsEdit.error) : ""}
+    </div>
+    <div class="note">
+      <span style="color:var(--accent);flex:0 0 auto">${IC.check}</span>
+      <div><b>A saved root takes effect when the console restarts.</b> The run database and cached
+        jobs are tied to the root resolved at launch, so nothing is half-switched now.</div>
+    </div>
+    <div class="muted" style="font-size:11.5px">The tool root comes from
+      <span class="mono">MOPS_TOOL_ROOT</span> or the executable's own location, and is not editable
+      from the GUI. The automations root comes from <span class="mono">MOPS_AUTOMATIONS_ROOT</span>,
+      then the <span class="mono">automations_root</span> key in
       <span class="mono">~/.config/mops/config.json</span>, then <span class="mono">~/.mops</span>.
-      Neither root is editable from the GUI.</div>`)}
+      A checkout used in place (jobs/ beside bin/) is a supported automations root.</div>`;
+    })}
   </div>
 
   <div class="sec-h"><h3>Run database</h3><span class="ln"></span></div>

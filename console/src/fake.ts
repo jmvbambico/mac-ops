@@ -1,5 +1,5 @@
 /**
- * An in-memory Backend built from the prototype's 38-automation fixture.
+ * An in-memory Backend built from the prototype's 37-automation fixture.
  *
  * This exists so the UI and every pure helper can be exercised with no Tauri
  * runtime and no Rust (the backend modules are still `todo!()`). It is NEVER a
@@ -167,6 +167,14 @@ export function fakeBackend(): Backend {
         automations_root: "~/.mops",
         config_path: "~/.config/mops/config.json",
         source: "default" as const,
+      };
+    },
+    async setAutomationsRoot(path) {
+      return {
+        tool_root: "/opt/mac-ops/tool",
+        automations_root: path.trim() || "~/.mops",
+        config_path: "~/.config/mops/config.json",
+        source: "config" as const,
       };
     },
     async setEnabled(file, enabled) {

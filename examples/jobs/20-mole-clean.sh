@@ -12,7 +12,8 @@
 # parse — apply-mode wording may differ from dry-run wording).
 #
 # MOPS_DRY_RUN=1 switches to `mole clean --dry-run` (the legacy
-# MACHINE_OPS_DRY_RUN name is still accepted until 0.4.0).
+# MACHINE_OPS_DRY_RUN name is still accepted until the owner's automations in
+# ~/projects/machine-ops are migrated; expected 0.5.0).
 # Never sudo, never a password.
 
 set -u

@@ -354,8 +354,9 @@ fn header(file: &str, tier: &str, timeout: u32, kind: &str, title: &str, doc: &[
     s.push_str("#\n");
     s.push_str("# Silent on success: a nominal run prints NOTHING. Detail goes to the run\n");
     s.push_str("# log via log_line; alert only on change, regression, or error.\n");
-    s.push_str("# MOPS_DRY_RUN=1 previews and mutates nothing (legacy\n");
-    s.push_str("# MACHINE_OPS_DRY_RUN is still read until 0.4.0).\n");
+    s.push_str("# MOPS_DRY_RUN=1 previews and mutates nothing (the legacy\n");
+    s.push_str("# MACHINE_OPS_DRY_RUN is still read until the owner's automations in\n");
+    s.push_str("# ~/projects/machine-ops are migrated; expected 0.5.0).\n");
     s.push_str("# Never sudo, never a password. stdin is /dev/null on every command that\n");
     s.push_str("# could prompt.\n");
     s.push_str("\nset -u\n\n");

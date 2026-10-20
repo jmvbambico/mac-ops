@@ -66,6 +66,14 @@ so maintenance keeps running. `bin/run` and `bin/run-job` export
 `MOPS_TOOL_ROOT`, which is how a job finds `lib/common.sh` even when
 its own directory is the automations root.
 
+The console's **Settings → Paths** panel can write this key for you. It
+accepts an absolute path, creates a directory that does not exist yet with
+`jobs/`, `logs/` and `state/`, and writes the config atomically while keeping
+any unrelated keys. A saved root takes effect when the console restarts — the
+run database and cached jobs stay on the root resolved at launch. If
+`$MOPS_AUTOMATIONS_ROOT` is set, it still overrides the file, so the panel says
+so and keeps showing the effective root until the variable is unset.
+
 The two roots may legitimately be the **same** directory — a git checkout used
 in place, with `jobs/` alongside `bin/`. Point
 `MOPS_AUTOMATIONS_ROOT` at that checkout and everything keeps working;
@@ -84,13 +92,49 @@ Canonical names:
 | `MOPS_RUNS` | where structured run records are appended |
 | `MOPS_RUN_STDOUT_CAP` | cap on captured stdout recorded per run |
 
-**Deprecated:** the old `MACHINE_OPS_*` names still work and will be **removed
-in 0.4.0**. During the transition `bin/run` and `bin/run-job` export BOTH names
-with identical values, so a job that reads the legacy name behaves exactly as
-it did. Reads prefer `MOPS_*` when both are set. The alias exists for the
-owner's own automations, which live in a separate repository this rename
-cannot reach — not for third-party users. When those automations have
-migrated, the legacy names go.
+**Deprecated:** the old `MACHINE_OPS_*` names still work. They are kept until
+the owner's automations in `~/projects/machine-ops` are migrated — that
+condition, not a release number, decides when the alias can go. `0.5.0` is
+only a non-binding estimate. During the transition `bin/run` and `bin/run-job`
+export BOTH names with identical values, so a job that reads the legacy name
+behaves exactly as it did. Reads prefer `MOPS_*` when both are set. The alias
+exists for the owner's own automations, which live in a separate repository
+this codebase cannot reach — not for third-party users.
+
+**Before the legacy names can go.** The deprecation note `warn_legacy_dry_run`
+logs in this repo is not a reliable migration signal for those automations.
+They source their **own copy** of `lib/common.sh`
+(`source "$SCRIPT_DIR/../lib/common.sh"`), not the library shipped here, so
+the note never fires for them. Absence of warnings is not evidence that the
+legacy names are unused. The detector is also lexical and non-exhaustive — it
+misses reads such as `printenv MACHINE_OPS_DRY_RUN` or
+`os.environ["MACHINE_OPS_DRY_RUN"]` — so a clean log proves nothing.
+
+A complete migration touches **both** files in that repository:
+
+- `jobs/*.sh` — four reads of `${MACHINE_OPS_DRY_RUN:-0}`, one per job.
+- `lib/common.sh` — four `MACHINE_OPS_LOG` references (lines 31, 33, 34, 46).
+
+Migrating only `jobs/*.sh` is incomplete. Their `lib/common.sh:31` sets
+`MACHINE_OPS_LOG` unconditionally at source time, anchored on the file's own
+path, so with the runner's export gone it takes that fallback and the run log
+**silently relocates** from the automations root to
+`~/projects/machine-ops/logs/machine-ops.log`. The console reads the
+automations root, so it then shows **empty history with nothing explaining
+why**. Nothing crashes and nothing is destroyed; it is silently wrong, which
+is harder to notice and exactly why `lib/common.sh` must be part of the
+migration. The two files look alike but resolve the log differently: ours goes
+through the automations root and needs `HOME`, theirs anchors on its own path.
+
+Those jobs also read `MACHINE_OPS_FORCE_OFFLINE` (twice), `_SKILL_LOCK`,
+`_NPX` and `_BREW`. These are test seams, not exported by the runner, so they
+are not urgent — but a migration that touches only `DRY_RUN`/`LOG` leaves
+mixed prefixes in one file. Whoever migrates should choose deliberately
+between "runner-exported variables only" and "all of them" and say which.
+
+Before dropping the alias, run all four live jobs under `--dry-run` and
+confirm each one still observes `DRY=1`. Do that verification first; nothing
+may run in apply mode until it passes.
 
 `install.sh` resolves the automations root when it renders the LaunchAgent and
 pins it in the plist, so launchd and `bin/run` always agree.
