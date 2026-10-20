@@ -23,10 +23,17 @@ const JOB_PATH: &str = "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin";
 /// Set to "1" to make `install`/`uninstall`/`kickstart` render and write
 /// nothing to launchctl. Internal escape hatch so the plist writer can be
 /// exercised without mutating a live system.
-const DRY_RUN_ENV: &str = "MACHINE_OPS_CONSOLE_LAUNCHCTL_DRY_RUN";
+///
+/// `MOPS_*` is canonical; the legacy name is still honoured until 0.4.0 for
+/// the owner's existing tooling. This is a test seam only, never exported by
+/// the runner.
+const DRY_RUN_ENV: &str = "MOPS_CONSOLE_LAUNCHCTL_DRY_RUN";
+const LEGACY_DRY_RUN_ENV: &str = "MACHINE_OPS_CONSOLE_LAUNCHCTL_DRY_RUN";
 
 fn dry_run() -> bool {
-    std::env::var(DRY_RUN_ENV).map(|v| v == "1").unwrap_or(false)
+    crate::paths::env_alias(DRY_RUN_ENV, LEGACY_DRY_RUN_ENV)
+        .map(|value| value.to_string_lossy() == "1")
+        .unwrap_or(false)
 }
 
 /// "30-brew-update.sh" -> "brew-update". The number prefix is run order for

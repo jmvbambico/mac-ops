@@ -10,7 +10,7 @@
 # The two roots are independent (AGENTS.md Principle II): the tool lives in
 # this checkout, while jobs/, logs/ and state/ belong to the automations root.
 # The automations root is resolved with the same precedence bin/run uses:
-#   1. $MACHINE_OPS_AUTOMATIONS_ROOT
+#   1. $MOPS_AUTOMATIONS_ROOT (legacy: $MACHINE_OPS_AUTOMATIONS_ROOT)
 #   2. automations_root in ~/.config/mops/config.json
 #   3. $HOME/.mops
 # and is pinned into the plist so launchd and bin/run agree on it.
@@ -39,6 +39,9 @@ if ! AUTOMATIONS_ROOT="$(machine_ops_automations_root)"; then
     printf 'install.sh: cannot resolve the automations root\n' >&2
     exit 1
 fi
+export MOPS_AUTOMATIONS_ROOT="$AUTOMATIONS_ROOT"
+# Legacy alias, same value until 0.4.0 (the owner's separate automations repo
+# still reads MACHINE_OPS_*).
 export MACHINE_OPS_AUTOMATIONS_ROOT="$AUTOMATIONS_ROOT"
 
 if [[ ! -f "$SRC" ]]; then

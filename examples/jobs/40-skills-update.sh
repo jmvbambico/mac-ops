@@ -22,7 +22,7 @@
 # Offline skips SILENTLY, same contract as the brew job: a nightly false
 # alarm for having no network would poison the alert channel.
 #
-# MACHINE_OPS_DRY_RUN=1: the update never runs; the lockfile is read and the
+# MOPS_DRY_RUN=1: the update never runs; the lockfile is read and the
 # current skill count is logged with a `planned` label.
 # A one-line summary always goes to the run log.
 # Never sudo, never a password. stdin is /dev/null on the update invocation.
@@ -31,8 +31,8 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # lib/common.sh belongs to the TOOL root, which may differ from this job's
-# automations root. bin/run and bin/run-job export MACHINE_OPS_TOOL_ROOT.
-MACOPS_LIB="${MACHINE_OPS_TOOL_ROOT:-$SCRIPT_DIR/..}/lib"
+# automations root. bin/run and bin/run-job export MOPS_TOOL_ROOT.
+MACOPS_LIB="${MOPS_TOOL_ROOT:-${MACHINE_OPS_TOOL_ROOT:-$SCRIPT_DIR/..}}/lib"
 # shellcheck disable=SC1091 # path resolved at runtime from the tool root
 if ! source "$MACOPS_LIB/common.sh"; then
     printf '40-skills-update: cannot load lib/common.sh\n' >&2
@@ -40,18 +40,19 @@ if ! source "$MACOPS_LIB/common.sh"; then
 fi
 
 LABEL="skills-update"
-DRY="${MACHINE_OPS_DRY_RUN:-0}"
-# Test seams: MACHINE_OPS_SKILL_LOCK points at fixture lockfiles and
-# MACHINE_OPS_NPX at a stub, so apply paths are provable without touching
-# the live skills installation.
-LOCKFILE="${MACHINE_OPS_SKILL_LOCK:-$HOME/.agents/.skill-lock.json}"
-NPX="${MACHINE_OPS_NPX:-/opt/homebrew/bin/npx}"
+DRY="${MOPS_DRY_RUN:-${MACHINE_OPS_DRY_RUN:-0}}"
+# Test seams: MOPS_SKILL_LOCK points at fixture lockfiles and MOPS_NPX at a
+# stub, so apply paths are provable without touching the live skills
+# installation (legacy MACHINE_OPS_* names accepted until 0.4.0).
+LOCKFILE="${MOPS_SKILL_LOCK:-${MACHINE_OPS_SKILL_LOCK:-$HOME/.agents/.skill-lock.json}}"
+NPX="${MOPS_NPX:-${MACHINE_OPS_NPX:-/opt/homebrew/bin/npx}}"
 
 # is_online — cheap bounded reachability probe for the npm registry
 # (DNS + TCP 443, never the update itself). Same shape as the brew job's
-# probe; MACHINE_OPS_FORCE_OFFLINE=1 forces the offline path for tests.
+# probe; MOPS_FORCE_OFFLINE=1 (legacy MACHINE_OPS_FORCE_OFFLINE accepted)
+# forces the offline path for tests.
 is_online() {
-    if [[ "${MACHINE_OPS_FORCE_OFFLINE:-0}" == "1" ]]; then
+    if [[ "${MOPS_FORCE_OFFLINE:-${MACHINE_OPS_FORCE_OFFLINE:-0}}" == "1" ]]; then
         return 1
     fi
     if have nc; then

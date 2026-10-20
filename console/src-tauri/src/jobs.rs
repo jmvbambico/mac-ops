@@ -262,7 +262,8 @@ fn next_number(dir: &Path) -> Result<u32> {
 /// Create jobs/<NN>-<slug>.sh from a template. The number prefix sets run
 /// order and must not collide with an existing file. The generated script
 /// MUST follow the house contract: `set -u`, source lib/common.sh, define
-/// LABEL, honor MACHINE_OPS_DRY_RUN=1, redirect stdin from /dev/null on any
+/// LABEL, honor MOPS_DRY_RUN=1 (legacy MACHINE_OPS_DRY_RUN accepted),
+/// redirect stdin from /dev/null on any
 /// command that could prompt, log_line the summary, alert ONLY on
 /// change/regression/error, end with flush_alerts "$LABEL" and exit 0.
 /// Never sudo. Returns the new filename.
@@ -353,15 +354,18 @@ fn header(file: &str, tier: &str, timeout: u32, kind: &str, title: &str, doc: &[
     s.push_str("#\n");
     s.push_str("# Silent on success: a nominal run prints NOTHING. Detail goes to the run\n");
     s.push_str("# log via log_line; alert only on change, regression, or error.\n");
-    s.push_str("# MACHINE_OPS_DRY_RUN=1 previews and mutates nothing.\n");
+    s.push_str("# MOPS_DRY_RUN=1 previews and mutates nothing (legacy\n");
+    s.push_str("# MACHINE_OPS_DRY_RUN is still read until 0.4.0).\n");
     s.push_str("# Never sudo, never a password. stdin is /dev/null on every command that\n");
     s.push_str("# could prompt.\n");
     s.push_str("\nset -u\n\n");
     s.push_str("SCRIPT_DIR=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")\" && pwd)\"\n");
     s.push_str("# lib/common.sh belongs to the TOOL root, which may differ from this job's\n");
-    s.push_str("# automations root. bin/run and bin/run-job export MACHINE_OPS_TOOL_ROOT;\n");
+    s.push_str("# automations root. bin/run and bin/run-job export MOPS_TOOL_ROOT;\n");
     s.push_str("# the fallback keeps a checkout used in place (same root) working.\n");
-    s.push_str("MACOPS_LIB=\"${MACHINE_OPS_TOOL_ROOT:-$SCRIPT_DIR/..}/lib\"\n");
+    s.push_str(
+        "MACOPS_LIB=\"${MOPS_TOOL_ROOT:-${MACHINE_OPS_TOOL_ROOT:-$SCRIPT_DIR/..}}/lib\"\n",
+    );
     s.push_str("# shellcheck disable=SC1091 # path resolved at runtime from the tool root\n");
     s.push_str("if ! source \"$MACOPS_LIB/common.sh\"; then\n");
     s.push_str(&format!(
@@ -376,14 +380,14 @@ fn header(file: &str, tier: &str, timeout: u32, kind: &str, title: &str, doc: &[
 /// The reachability probe shared by every network-touching template.
 /// Offline SKIPS SILENTLY: at 02:00 a laptop may simply have no network,
 /// and a nightly false alarm for being offline would poison the alert
-/// channel. MACHINE_OPS_FORCE_OFFLINE=1 is the test seam.
+/// channel. MOPS_FORCE_OFFLINE=1 (legacy accepted) is the test seam.
 fn online_probe() -> &'static str {
     r#"# is_online — cheap bounded reachability probe (DNS + TCP 443), never the
 # real operation. Offline skips SILENTLY: a nightly false alarm for having
 # no network would poison the alert channel.
-# MACHINE_OPS_FORCE_OFFLINE=1 forces the offline path (test seam).
+# MOPS_FORCE_OFFLINE=1 forces the offline path (legacy name accepted).
 is_online() {
-    if [[ "${MACHINE_OPS_FORCE_OFFLINE:-0}" == "1" ]]; then
+    if [[ "${MOPS_FORCE_OFFLINE:-${MACHINE_OPS_FORCE_OFFLINE:-0}}" == "1" ]]; then
         return 1
     fi
     if have nc; then
@@ -422,7 +426,7 @@ fn render_mole(spec: &NewJob, file: &str, label: &str, tier: &str, timeout: u32)
         "automatically otherwise, which is why every invocation reads /dev/null.".into(),
         "Captured output is stripped of ANSI colour before it reaches the log.".into(),
         String::new(),
-        format!("MACHINE_OPS_DRY_RUN=1 runs `mole {sub} --dry-run` instead (preview only)."),
+        format!("MOPS_DRY_RUN=1 runs `mole {sub} --dry-run` instead (preview only)."),
     ];
     let doc_refs: Vec<&str> = doc.iter().map(|s| s.as_str()).collect();
     let mut s = header(
@@ -434,10 +438,12 @@ fn render_mole(spec: &NewJob, file: &str, label: &str, tier: &str, timeout: u32)
         &doc_refs,
     );
     s.push_str(&format!("LABEL=\"{label}\"\n"));
-    s.push_str("DRY=\"${MACHINE_OPS_DRY_RUN:-0}\"\n");
-    s.push_str("# Test seam: point MACHINE_OPS_MOLE at a stub to exercise this job\n");
-    s.push_str("# without touching the real installation.\n");
-    s.push_str("MOLE=\"${MACHINE_OPS_MOLE:-/opt/homebrew/bin/mole}\"\n\n");
+    s.push_str("DRY=\"${MOPS_DRY_RUN:-${MACHINE_OPS_DRY_RUN:-0}}\"\n");
+    s.push_str("# Test seam: point MOPS_MOLE at a stub to exercise this job\n");
+    s.push_str("# without touching the real installation (legacy name accepted).\n");
+    s.push_str(
+        "MOLE=\"${MOPS_MOLE:-${MACHINE_OPS_MOLE:-/opt/homebrew/bin/mole}}\"\n\n",
+    );
     s.push_str(
         r#"if [[ ! -x "$MOLE" ]]; then
     alert "[$LABEL] mole not found at $MOLE"
@@ -581,7 +587,7 @@ fn render_pkg(spec: &NewJob, file: &str, label: &str, tier: &str, timeout: u32) 
         }
     }
     doc.push(String::new());
-    doc.push("MACHINE_OPS_DRY_RUN=1 refreshes nothing and upgrades nothing; it only".into());
+    doc.push("MOPS_DRY_RUN=1 refreshes nothing and upgrades nothing; it only".into());
     doc.push("reads the current state and logs what it WOULD do.".into());
     let doc_refs: Vec<&str> = doc.iter().map(|s| s.as_str()).collect();
 
@@ -594,11 +600,11 @@ fn render_pkg(spec: &NewJob, file: &str, label: &str, tier: &str, timeout: u32) 
         &doc_refs,
     );
     s.push_str(&format!("LABEL=\"{label}\"\n"));
-    s.push_str("DRY=\"${MACHINE_OPS_DRY_RUN:-0}\"\n");
-    s.push_str("# Test seam: point MACHINE_OPS_PKG_BIN at a stub to exercise the apply\n");
-    s.push_str("# paths without touching the real installation.\n");
+    s.push_str("DRY=\"${MOPS_DRY_RUN:-${MACHINE_OPS_DRY_RUN:-0}}\"\n");
+    s.push_str("# Test seam: point MOPS_PKG_BIN at a stub to exercise the apply\n");
+    s.push_str("# paths without touching the real installation (legacy name accepted).\n");
     s.push_str(&format!(
-        "PKG_BIN=\"${{MACHINE_OPS_PKG_BIN:-{}}}\"\n",
+        "PKG_BIN=\"${{MOPS_PKG_BIN:-${{MACHINE_OPS_PKG_BIN:-{}}}}}\"\n",
         p.bin
     ));
     s.push_str(&format!("PROBE_HOST=\"{}\"\n\n", p.host));
@@ -777,7 +783,7 @@ fn render_py(spec: &NewJob, file: &str, label: &str, tier: &str, timeout: u32) -
         "a nightly false alarm for being offline would poison the alert channel.",
         "An already-usable venv runs offline just fine.",
         "",
-        "The script inherits MACHINE_OPS_DRY_RUN, so it can preview its own work;",
+        "The script inherits MOPS_DRY_RUN (legacy name also exported), so it",
         "this wrapper additionally creates and installs NOTHING in dry mode.",
         "Anything the script prints on stdout is log detail: only a non-zero exit",
         "(or a venv/install failure) alerts.",
@@ -792,15 +798,15 @@ fn render_py(spec: &NewJob, file: &str, label: &str, tier: &str, timeout: u32) -
         &doc,
     );
     s.push_str(&format!("LABEL=\"{label}\"\n"));
-    s.push_str("DRY=\"${MACHINE_OPS_DRY_RUN:-0}\"\n");
+    s.push_str("DRY=\"${MOPS_DRY_RUN:-${MACHINE_OPS_DRY_RUN:-0}}\"\n");
     s.push_str(&format!(
         "# Script to run, relative to the repo root (resolved from this file).\nPY_SCRIPT=\"$SCRIPT_DIR/../{script}\"\n"
     ));
     s.push_str("# Optional requirements file: <script>-requirements.txt beside the script.\n");
     s.push_str("REQ_FILE=\"${PY_SCRIPT%.py}-requirements.txt\"\n");
-    s.push_str("PYTHON=\"${MACHINE_OPS_PYTHON:-/usr/bin/python3}\"\n");
+    s.push_str("PYTHON=\"${MOPS_PYTHON:-${MACHINE_OPS_PYTHON:-/usr/bin/python3}}\"\n");
     s.push_str(&format!(
-        "VENV_DIR=\"${{MACHINE_OPS_VENV_DIR:-$HOME/.cache/machine-ops/venvs/{label}}}\"\n"
+        "VENV_DIR=\"${{MOPS_VENV_DIR:-${{MACHINE_OPS_VENV_DIR:-$HOME/.cache/machine-ops/venvs/{label}}}}}\"\n"
     ));
     s.push_str("VENV_PY=\"$VENV_DIR/bin/python3\"\n");
     s.push_str("PROBE_HOST=\"pypi.org\"\n\n");
@@ -899,7 +905,9 @@ if [[ ! -x "$VENV_PY" ]]; then
     exit 0
 fi
 
-# The script decides for itself what a preview means; it sees the same flag.
+# The script decides for itself what a preview means; it sees the same flag
+# under BOTH names, so a legacy script cannot mistake a preview for apply.
+export MOPS_DRY_RUN="$DRY"
 export MACHINE_OPS_DRY_RUN="$DRY"
 RUN_OUT="$("$VENV_PY" "$PY_SCRIPT" < /dev/null 2>&1)"
 RUN_RC=$?
@@ -938,9 +946,9 @@ fn render_sh(_spec: &NewJob, file: &str, label: &str, tier: &str, timeout: u32) 
     ];
     let mut s = header(file, tier, timeout, "sh", "TODO describe what this watches", &doc);
     s.push_str(&format!("LABEL=\"{label}\"\n"));
-    s.push_str("DRY=\"${MACHINE_OPS_DRY_RUN:-0}\"\n\n");
+    s.push_str("DRY=\"${MOPS_DRY_RUN:-${MACHINE_OPS_DRY_RUN:-0}}\"\n\n");
     s.push_str(
-        r#"# preview_work — read-only preview for MACHINE_OPS_DRY_RUN=1. Must mutate
+        r#"# preview_work — read-only preview for MOPS_DRY_RUN=1. Must mutate
 # NOTHING: no installs, no writes, no index refreshes.
 preview_work() {
     # TODO: report what an apply run would change.
@@ -1022,7 +1030,7 @@ pub fn delete(root: &Path, file: &str, keep_script: bool) -> Result<()> {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .ok_or_else(|| anyhow::anyhow!("HOME is not set; refusing to delete {file} outright"))?;
-    let trash = std::env::var_os("MACHINE_OPS_TRASH_DIR")
+    let trash = crate::paths::env_alias("MOPS_TRASH_DIR", "MACHINE_OPS_TRASH_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join(".Trash"));
     std::fs::create_dir_all(&trash)
@@ -1245,7 +1253,9 @@ fn split_keep_terminators(data: &[u8]) -> Vec<Vec<u8>> {
 // ---------------------------------------------------------------------------
 
 /// Run one job through bin/run-job, capturing stdout/stderr and timing.
-/// stdin MUST be /dev/null. `dry` sets MACHINE_OPS_DRY_RUN=1.
+/// stdin MUST be /dev/null. `dry` sets MOPS_DRY_RUN=1 and exports the legacy
+/// MACHINE_OPS_DRY_RUN with the same value (the owner's separate automations
+/// repo still reads it; an unset legacy flag means APPLY MODE there).
 /// bin/run-job exits 0 even when the job speaks — stdout is the alert
 /// channel, not the exit code — so derive Status via Status::derive.
 ///
@@ -1269,8 +1279,11 @@ pub fn run(tool_root: &Path, automations_root: &Path, file: &str, dry: bool) -> 
         .arg(&runner)
         .arg(&job)
         .current_dir(automations_root)
+        .env("MOPS_TOOL_ROOT", tool_root)
         .env("MACHINE_OPS_TOOL_ROOT", tool_root)
+        .env("MOPS_AUTOMATIONS_ROOT", automations_root)
         .env("MACHINE_OPS_AUTOMATIONS_ROOT", automations_root)
+        .env("MOPS_DRY_RUN", if dry { "1" } else { "0" })
         .env("MACHINE_OPS_DRY_RUN", if dry { "1" } else { "0" })
         .stdin(Stdio::null()) // no job may ever prompt
         .stdout(Stdio::piped())
@@ -1583,7 +1596,9 @@ mod tests {
             assert!(text.starts_with("#!/usr/bin/env bash\n"), "{}", why("shebang"));
             assert!(text.contains("\nset -u\n"), "{}", why("set -u"));
             assert!(
-                text.contains("MACOPS_LIB=\"${MACHINE_OPS_TOOL_ROOT:-$SCRIPT_DIR/..}/lib\""),
+                text.contains(
+                    "MACOPS_LIB=\"${MOPS_TOOL_ROOT:-${MACHINE_OPS_TOOL_ROOT:-$SCRIPT_DIR/..}}/lib\""
+                ),
                 "{}",
                 why("tool-root-relative MACOPS_LIB")
             );
@@ -1593,7 +1608,12 @@ mod tests {
                 why("lib/common.sh source")
             );
             assert!(text.contains(&format!("LABEL=\"{}\"", file.trim_end_matches(".sh"))), "{}", why("LABEL"));
-            assert!(text.contains("MACHINE_OPS_DRY_RUN"), "{}", why("dry-run support"));
+            assert!(text.contains("MOPS_DRY_RUN"), "{}", why("dry-run support"));
+            assert!(
+                text.contains("MACHINE_OPS_DRY_RUN"),
+                "{}",
+                why("legacy dry-run fallback")
+            );
             assert!(text.contains("< /dev/null"), "{}", why("stdin redirect"));
             assert!(text.contains("log_line "), "{}", why("log_line summary"));
             assert!(text.contains("alert "), "{}", why("alert"));
@@ -1673,14 +1693,16 @@ mod tests {
             let file = create(t.root(), &s).unwrap();
             let out = Command::new("/bin/bash")
                 .arg(t.jobs().join(&file))
-                .env("MACHINE_OPS_LOG", &log)
-                .env("MACHINE_OPS_DRY_RUN", "1")
-                .env("MACHINE_OPS_FORCE_OFFLINE", "1") // offline must be silent
-                .env("MACHINE_OPS_MOLE", &stub)
-                .env("MACHINE_OPS_PKG_BIN", &stub)
+                .env("MOPS_LOG", &log)
+                .env("MOPS_DRY_RUN", "1")
+                .env("MOPS_FORCE_OFFLINE", "1") // offline must be silent
+                .env("MOPS_MOLE", &stub)
+                .env("MOPS_PKG_BIN", &stub)
                 // Keep the child hermetic: the template must find lib/ via the
                 // same-root fallback, not a tool root another test set.
+                .env_remove("MOPS_TOOL_ROOT")
                 .env_remove("MACHINE_OPS_TOOL_ROOT")
+                .env_remove("MOPS_AUTOMATIONS_ROOT")
                 .env_remove("MACHINE_OPS_AUTOMATIONS_ROOT")
                 .stdin(Stdio::null())
                 .output()
@@ -1736,11 +1758,15 @@ mod tests {
 
         let out = Command::new("/bin/bash")
             .arg(&job)
-            .env("MACHINE_OPS_LOG", &log)
-            .env("MACHINE_OPS_PKG_BIN", &stub)
+            .env("MOPS_LOG", &log)
+            .env("MOPS_PKG_BIN", &stub)
+            .env_remove("MOPS_DRY_RUN")
             .env_remove("MACHINE_OPS_DRY_RUN")
+            .env_remove("MOPS_FORCE_OFFLINE")
             .env_remove("MACHINE_OPS_FORCE_OFFLINE")
+            .env_remove("MOPS_TOOL_ROOT")
             .env_remove("MACHINE_OPS_TOOL_ROOT")
+            .env_remove("MOPS_AUTOMATIONS_ROOT")
             .env_remove("MACHINE_OPS_AUTOMATIONS_ROOT")
             .stdin(Stdio::null())
             .output()
@@ -1756,10 +1782,12 @@ mod tests {
 
         let out = Command::new("/bin/bash")
             .arg(&job)
-            .env("MACHINE_OPS_LOG", &log)
-            .env("MACHINE_OPS_PKG_BIN", &stub)
+            .env("MOPS_LOG", &log)
+            .env("MOPS_PKG_BIN", &stub)
             .env("STUB_FAIL", "1")
+            .env_remove("MOPS_TOOL_ROOT")
             .env_remove("MACHINE_OPS_TOOL_ROOT")
+            .env_remove("MOPS_AUTOMATIONS_ROOT")
             .env_remove("MACHINE_OPS_AUTOMATIONS_ROOT")
             .stdin(Stdio::null())
             .output()
@@ -1957,6 +1985,7 @@ mod tests {
         // SAFETY: the trash dir is redirected into the temp root, so no test
         // ever drops files into the real ~/.Trash.
         unsafe { std::env::set_var("MACHINE_OPS_TRASH_DIR", &trash) };
+        unsafe { std::env::remove_var("MOPS_TRASH_DIR") };
         delete(t.root(), &file, false).unwrap();
         assert!(!path.exists(), "script should have left jobs/");
         assert_eq!(std::fs::read_to_string(trash.join(&file)).unwrap(), body);
@@ -2019,11 +2048,15 @@ mod tests {
         // Dry run passes the flag through.
         std::fs::write(
             tool.join("bin/run-job"),
-            "#!/usr/bin/env bash\nset -u\nprintf 'dry=%s\\n' \"${MACHINE_OPS_DRY_RUN:-unset}\"\nexit 0\n",
+            "#!/usr/bin/env bash\nset -u\nprintf 'dry=%s legacy=%s\\n' \"${MOPS_DRY_RUN:-unset}\" \"${MACHINE_OPS_DRY_RUN:-unset}\"\nexit 0\n",
         )
         .unwrap();
-        assert!(run(&tool, t.root(), "10-stub.sh", true).unwrap().stdout.contains("dry=1"));
-        assert!(run(&tool, t.root(), "10-stub.sh", false).unwrap().stdout.contains("dry=0"));
+        let dry_out = run(&tool, t.root(), "10-stub.sh", true).unwrap().stdout;
+        assert!(dry_out.contains("dry=1"), "stdout: {dry_out}");
+        assert!(dry_out.contains("legacy=1"), "stdout: {dry_out}");
+        let apply_out = run(&tool, t.root(), "10-stub.sh", false).unwrap().stdout;
+        assert!(apply_out.contains("dry=0"), "stdout: {apply_out}");
+        assert!(apply_out.contains("legacy=0"), "stdout: {apply_out}");
 
         // A missing job or missing wrapper is an error, not a silent "quiet".
         assert!(run(&tool, t.root(), "99-missing.sh", false).is_err());
