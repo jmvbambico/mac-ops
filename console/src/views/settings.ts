@@ -3,8 +3,9 @@
  * commands the backend exposes (prune_runs, reindex).
  */
 import { IC } from "../icons";
-import { groupsOf, localLoadProfile } from "../format";
+import { esc, groupsOf, localLoadProfile } from "../format";
 import { S, jobs } from "../store";
+import { asyncPanel } from "./common";
 
 export function vSettings(): string {
   const all = jobs();
@@ -30,6 +31,24 @@ export function vSettings(): string {
       heatmap and every bulk action. Without them MacOps degrades into a flat list the moment you pass
       roughly a dozen automations.</div>
     </div>
+  </div>
+
+  <div class="sec-h"><h3>Paths</h3><span class="ln"></span></div>
+  <div class="card pad col" style="gap:11px">
+    ${asyncPanel(S.paths, "Resolved paths unavailable", "paths", (p) => `
+    <dl class="kv">
+      <dt>Tool root</dt><dd class="mono">${esc(p.tool_root)}</dd>
+      <dt>Automations root</dt><dd class="mono">${esc(p.automations_root)}${
+        p.source ? `<span class="badge tier" style="margin-left:5px">${esc(p.source)}</span>` : ""
+      }</dd>
+      <dt>Config file</dt><dd class="mono">${esc(p.config_path)}</dd>
+    </dl>
+    <div class="muted" style="font-size:11.5px">Read-only diagnostics. The tool root comes from
+      <span class="mono">MACHINE_OPS_TOOL_ROOT</span> or the executable's own location. The automations root
+      comes from <span class="mono">MACHINE_OPS_AUTOMATIONS_ROOT</span>, then the
+      <span class="mono">automations_root</span> key in
+      <span class="mono">~/.config/mops/config.json</span>, then <span class="mono">~/.mops</span>.
+      Neither root is editable from the GUI.</div>`)}
   </div>
 
   <div class="sec-h"><h3>Run database</h3><span class="ln"></span></div>
