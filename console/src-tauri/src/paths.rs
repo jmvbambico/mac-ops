@@ -11,7 +11,7 @@
 //! `jobs_dir`/`logs_dir`/`state_file`/`run_log`/`db_file`, and the tool root
 //! for `run_job_path`.
 use anyhow::{bail, Context, Result};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// A directory is the tool root when it contains the two things the runner
 /// itself needs. Note that `jobs/` is deliberately NOT part of this test: the
@@ -148,6 +148,155 @@ pub fn config_path() -> Result<PathBuf> {
         anyhow::anyhow!("HOME is not set; cannot locate ~/.config/mops/config.json")
     })?;
     Ok(home.join(".config/mops/config.json"))
+}
+
+/// Lexically normalise `.`/`..`/repeated separators without touching the
+/// filesystem. Used only as the last-resort comparison form, when a path has
+/// no existing ancestor to canonicalise.
+fn lexical_normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// A canonical form usable even when the directory does not exist yet: resolve
+/// symlinks in the deepest existing ancestor, then re-attach the missing tail.
+/// Comparing a symlink with its target must never be a string comparison.
+fn comparable_path(path: &Path) -> PathBuf {
+    let mut existing = path;
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    loop {
+        if let Ok(canonical) = existing.canonicalize() {
+            let mut out = canonical;
+            for part in tail.iter().rev() {
+                out.push(part);
+            }
+            return lexical_normalize(&out);
+        }
+        match (existing.parent(), existing.file_name()) {
+            (Some(parent), Some(name)) if !parent.as_os_str().is_empty() => {
+                tail.push(name.to_os_string());
+                existing = parent;
+            }
+            _ => return lexical_normalize(path),
+        }
+    }
+}
+
+/// Read the config as a generic object so an unrelated key written by the user
+/// (or a future version) survives a save. A missing or corrupt file becomes an
+/// empty object: corrupt JSON has no readable keys to preserve, and refusing to
+/// save would leave the user unable to repair it from the GUI. Principle IV
+/// still applies on the read side — a corrupt file falls through to `~/.mops`.
+fn read_config_object(path: &Path) -> serde_json::Map<String, serde_json::Value> {
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return serde_json::Map::new();
+    };
+    match serde_json::from_str::<serde_json::Value>(&raw) {
+        Ok(serde_json::Value::Object(map)) => map,
+        _ => serde_json::Map::new(),
+    }
+}
+
+/// Write via a temp file in the SAME directory and rename: an interrupted write
+/// can leave a stray temp file, never a truncated `config.json`.
+fn write_atomic(path: &Path, contents: &str) -> Result<()> {
+    use std::io::Write;
+
+    let dir = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("{} has no parent directory", path.display()))?;
+    std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("config.json");
+    let tmp = dir.join(format!(".{name}.{}.{nanos}.tmp", std::process::id()));
+
+    let result = (|| -> Result<()> {
+        let mut file = std::fs::File::create(&tmp)
+            .with_context(|| format!("create {}", tmp.display()))?;
+        file.write_all(contents.as_bytes())
+            .with_context(|| format!("write {}", tmp.display()))?;
+        file.sync_all()
+            .with_context(|| format!("flush {}", tmp.display()))?;
+        std::fs::rename(&tmp, path)
+            .with_context(|| format!("rename {} to {}", tmp.display(), path.display()))?;
+        Ok(())
+    })();
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
+/// Persist `raw` as the configured automations root, then return the value
+/// that was stored (trimmed exactly like both readers).
+///
+/// Validation, in order:
+///   * the value is non-empty after the reader-compatible trim;
+///   * it is absolute (neither reader expands `~` or a relative path);
+///   * an existing path must be a directory — a missing one is created with
+///     `jobs/`, `logs/` and `state/` by `ensure_dirs`.
+///
+/// The tool-root comparison is canonicalised. An in-place git checkout, where
+/// the automations root IS the tool root, is a documented supported layout, so
+/// it is accepted. A directory strictly INSIDE the tool root is rejected:
+/// that would scatter the user's data through the installed code, which is
+/// exactly what Principle II forbids and is not the supported in-place case.
+pub fn set_config_root(config_file: &Path, tool_root: &Path, raw: &str) -> Result<PathBuf> {
+    let trimmed = trim_like_bash_config(raw);
+    if trimmed.is_empty() {
+        bail!("the automations root cannot be empty");
+    }
+
+    let requested = Path::new(trimmed);
+    if !requested.is_absolute() {
+        bail!("the automations root must be an absolute path (got {trimmed:?})");
+    }
+    if requested.exists() && !requested.is_dir() {
+        bail!("{} exists but is not a directory", requested.display());
+    }
+
+    let target = comparable_path(requested);
+    let tool = comparable_path(tool_root);
+    if target != tool && target.starts_with(&tool) {
+        bail!(
+            "{} is inside the MacOps tool directory ({}); choose a directory outside the installed code",
+            requested.display(),
+            tool_root.display()
+        );
+    }
+
+    // Creating the user's root is legitimate; creating it here also exercises
+    // the same helper the app uses at startup, so a fresh root is complete.
+    ensure_dirs(requested)?;
+
+    let mut config = read_config_object(config_file);
+    config.insert(
+        "automations_root".to_string(),
+        serde_json::Value::String(trimmed.to_string()),
+    );
+    let body = serde_json::to_string_pretty(&serde_json::Value::Object(config))
+        .context("serialise the mops config")?
+        + "\n";
+    write_atomic(config_file, &body)?;
+
+    Ok(PathBuf::from(trimmed))
 }
 
 /// The installed MacOps tool. Resolution order, first hit wins:
@@ -707,6 +856,186 @@ mod tests {
         let found = tool_root().unwrap();
         assert_ne!(found, bogus);
         assert!(looks_like_tool_root(&found));
+    }
+
+    /// The write-side validator: empty/whitespace, relative and
+    /// file-not-directory are rejected before anything is created or saved.
+    #[test]
+    fn set_config_root_rejects_empty_relative_and_non_directory() {
+        let base = Tmp::new("set-invalid");
+        let home = base.path().join("home");
+        let tool = base.path().join("tool");
+        make_tool_root(&tool);
+        let cfg = home.join(".config/mops/config.json");
+        let file = base.path().join("not-a-dir");
+        std::fs::write(&file, "x").unwrap();
+
+        let bad = [
+            "",
+            "   ",
+            "\t\n\r",
+            "\u{1c}\u{1d}\u{1e}\u{1f}",
+            "relative/path",
+            "~/macops",
+            file.to_str().unwrap(),
+        ];
+        for value in bad {
+            let err = set_config_root(&cfg, &tool, value)
+                .expect_err(&format!("{value:?} must be rejected"))
+                .to_string();
+            assert!(!err.is_empty(), "{value:?} must explain the rejection");
+        }
+
+        // Validation happens before any filesystem work: no config directory,
+        // no config file, nothing partially written.
+        assert!(!cfg.exists(), "a rejected value must not write config.json");
+        assert!(!cfg.parent().unwrap().exists(), "a rejected value must not create ~/.config/mops");
+    }
+
+    #[test]
+    fn set_config_root_creates_a_fresh_root_with_jobs_logs_state() {
+        let base = Tmp::new("set-fresh");
+        let home = base.path().join("home");
+        let tool = base.path().join("tool");
+        let auto = base.path().join("fresh root");
+        make_tool_root(&tool);
+        let cfg = home.join(".config/mops/config.json");
+        assert!(!auto.exists());
+
+        let stored = set_config_root(&cfg, &tool, auto.to_str().unwrap()).unwrap();
+        assert_eq!(stored, auto);
+        for sub in ["jobs", "logs", "state"] {
+            assert!(auto.join(sub).is_dir(), "ensure_dirs must create {sub}/");
+        }
+        assert!(cfg.is_file(), "the missing ~/.config/mops directory is created");
+        let (root, source) = resolve_automations_root(None, Some(&cfg), Some(&home)).unwrap();
+        assert_eq!(root, auto);
+        assert_eq!(source, "config");
+    }
+
+    /// Read-modify-write: unrelated keys written by the user (or a newer
+    /// version) must survive. Clobbering them would silently lose settings.
+    #[test]
+    fn set_config_root_preserves_unrelated_config_keys() {
+        let base = Tmp::new("set-preserve");
+        let home = base.path().join("home");
+        let tool = base.path().join("tool");
+        let auto = base.path().join("auto");
+        make_tool_root(&tool);
+        let cfg = write_config(
+            &home,
+            r#"{"version": 9, "theme": "dark", "nested": {"keep": true}, "automations_root": "/old"}"#,
+        );
+
+        set_config_root(&cfg, &tool, auto.to_str().unwrap()).unwrap();
+
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(saved["version"], 9);
+        assert_eq!(saved["theme"], "dark");
+        assert_eq!(saved["nested"]["keep"], true);
+        assert_eq!(saved["automations_root"], auto.to_str().unwrap());
+    }
+
+    /// The stored string must be byte-identical for both readers. We trim with
+    /// the exact reader function, so a second read (which trims again) is a
+    /// no-op; the raw on-disk value already has no surrounding whitespace.
+    #[test]
+    fn set_config_root_value_round_trips_through_the_reader() {
+        let base = Tmp::new("set-roundtrip");
+        let home = base.path().join("home");
+        let tool = base.path().join("tool");
+        let auto = base.path().join("Volumes with spaces");
+        make_tool_root(&tool);
+        let cfg = home.join(".config/mops/config.json");
+        let path = auto.to_str().unwrap();
+
+        // Every form Python's str.strip() removes, including U+001C..U+001F
+        // that Rust's char::is_whitespace alone does not.
+        for wrapped in [
+            format!("  {path}  "),
+            format!("\t{path}\n"),
+            format!("\r\n{path}\r\n"),
+            format!("\u{1c}{path}\u{1f}"),
+        ] {
+            let stored = set_config_root(&cfg, &tool, &wrapped).unwrap();
+            assert_eq!(stored, auto);
+
+            let saved: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+            let written = saved["automations_root"].as_str().unwrap();
+            assert_eq!(written, path, "the trim must happen BEFORE writing");
+            assert_eq!(
+                trim_like_bash_config(written),
+                written,
+                "the stored value must be trim-stable for both readers"
+            );
+
+            let (root, source) =
+                resolve_automations_root(None, Some(&cfg), Some(&home)).unwrap();
+            assert_eq!(root, auto);
+            assert_eq!(source, "config");
+        }
+    }
+
+    /// A git checkout used in place is documented as supported: jobs/ beside
+    /// bin/. Pointing the automations root at the tool root must work.
+    #[test]
+    fn set_config_root_allows_the_tool_root_itself() {
+        let base = Tmp::new("set-same-dir");
+        let home = base.path().join("home");
+        let shared = base.path().join("checkout");
+        make_tool_root(&shared);
+        let cfg = home.join(".config/mops/config.json");
+
+        set_config_root(&cfg, &shared, shared.to_str().unwrap()).unwrap();
+
+        for sub in ["jobs", "logs", "state"] {
+            assert!(shared.join(sub).is_dir(), "in-place checkout gets {sub}/");
+        }
+        assert!(shared.join("bin/run").is_file(), "tool files must survive");
+        assert!(shared.join("lib/common.sh").is_file());
+        let (root, source) = resolve_automations_root(None, Some(&cfg), Some(&home)).unwrap();
+        assert_eq!(root, shared);
+        assert_eq!(source, "config");
+    }
+
+    /// A directory strictly inside the tool root is NOT the supported in-place
+    /// layout; it scatters user data through installed code (Principle II).
+    /// The rejection happens before anything is created.
+    #[test]
+    fn set_config_root_rejects_a_directory_inside_the_tool_root() {
+        let base = Tmp::new("set-inside-tool");
+        let home = base.path().join("home");
+        let tool = base.path().join("tool");
+        make_tool_root(&tool);
+        let cfg = home.join(".config/mops/config.json");
+        let inside = tool.join("user-data");
+
+        let err = set_config_root(&cfg, &tool, inside.to_str().unwrap())
+            .expect_err("a descendant of the tool root must be rejected")
+            .to_string();
+        assert!(err.contains("inside the MacOps tool directory"), "{err}");
+        assert!(!inside.exists(), "nothing may be created under the tool root");
+        assert!(!cfg.exists());
+    }
+
+    /// A corrupt config has no readable keys to preserve; saving must still
+    /// repair it into valid JSON with the new value.
+    #[test]
+    fn set_config_root_repairs_a_corrupt_config() {
+        let base = Tmp::new("set-corrupt");
+        let home = base.path().join("home");
+        let tool = base.path().join("tool");
+        let auto = base.path().join("auto");
+        make_tool_root(&tool);
+        let cfg = write_config(&home, "{ not json");
+
+        set_config_root(&cfg, &tool, auto.to_str().unwrap()).unwrap();
+
+        let (root, source) = resolve_automations_root(None, Some(&cfg), Some(&home)).unwrap();
+        assert_eq!(root, auto);
+        assert_eq!(source, "config");
     }
 
     fn list_tree(root: &Path) -> Vec<PathBuf> {

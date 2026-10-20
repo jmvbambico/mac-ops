@@ -169,6 +169,14 @@ export function fakeBackend(): Backend {
         source: "default" as const,
       };
     },
+    async setAutomationsRoot(path) {
+      return {
+        tool_root: "/opt/mac-ops/tool",
+        automations_root: path.trim() || "~/.mops",
+        config_path: "~/.config/mops/config.json",
+        source: "config" as const,
+      };
+    },
     async setEnabled(file, enabled) {
       find(file).enabled = enabled;
     },
