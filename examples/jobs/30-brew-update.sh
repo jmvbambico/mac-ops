@@ -38,7 +38,7 @@
 # data) but is recorded as unknown, never as 0.
 # A one-line summary always goes to the run log.
 #
-# MACHINE_OPS_DRY_RUN=1: dry run mutates nothing — no `brew update`, no
+# MOPS_DRY_RUN=1: dry run mutates nothing — no `brew update`, no
 # `brew upgrade`, no `brew cleanup`. The outdated lists are read from the
 # existing index (which is NOT refreshed) and the summary logs `planned=`
 # instead of `upgraded=`.
@@ -48,19 +48,19 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # lib/common.sh belongs to the TOOL root, which may differ from this job's
-# automations root. bin/run and bin/run-job export MACHINE_OPS_TOOL_ROOT.
-MACOPS_LIB="${MACHINE_OPS_TOOL_ROOT:-$SCRIPT_DIR/..}/lib"
+# automations root. bin/run and bin/run-job export MOPS_TOOL_ROOT.
+MACOPS_LIB="${MOPS_TOOL_ROOT:-${MACHINE_OPS_TOOL_ROOT:-$SCRIPT_DIR/..}}/lib"
 # shellcheck disable=SC1091 # path resolved at runtime from the tool root
 if ! source "$MACOPS_LIB/common.sh"; then
     printf '30-brew-update: cannot load lib/common.sh\n' >&2
     exit 1
 fi
 
-# Test seam: point MACHINE_OPS_BREW at a stub to exercise apply paths
-# without touching the live Homebrew installation.
-BREW="${MACHINE_OPS_BREW:-/opt/homebrew/bin/brew}"
+# Test seam: point MOPS_BREW at a stub to exercise apply paths without
+# touching the live Homebrew installation (legacy MACHINE_OPS_BREW accepted).
+BREW="${MOPS_BREW:-${MACHINE_OPS_BREW:-/opt/homebrew/bin/brew}}"
 LABEL="brew-update"
-DRY="${MACHINE_OPS_DRY_RUN:-0}"
+DRY="${MOPS_DRY_RUN:-${MACHINE_OPS_DRY_RUN:-0}}"
 
 # Formulae never upgraded unattended. One entry per line, each with its why.
 HOLD_FORMULAE=(
@@ -80,10 +80,10 @@ HOLD_FORMULAE=(
 # is_online — cheap bounded reachability probe for the brew index host
 # (DNS + TCP 443, not a full brew call). ping to a bare IP is only the
 # fallback when nc is absent. Bare command names (never absolute paths) so
-# a PATH stub can fake either for tests; MACHINE_OPS_FORCE_OFFLINE=1 forces
-# the offline path (also a test seam).
+# a PATH stub can fake either for tests; MOPS_FORCE_OFFLINE=1 (legacy
+# MACHINE_OPS_FORCE_OFFLINE accepted) forces the offline path.
 is_online() {
-    if [[ "${MACHINE_OPS_FORCE_OFFLINE:-0}" == "1" ]]; then
+    if [[ "${MOPS_FORCE_OFFLINE:-${MACHINE_OPS_FORCE_OFFLINE:-0}}" == "1" ]]; then
         return 1
     fi
     if have nc; then

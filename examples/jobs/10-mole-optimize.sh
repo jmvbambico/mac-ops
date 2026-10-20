@@ -12,7 +12,8 @@
 #   - health_score_msg mentioning a restart
 # Otherwise silent. A one-line summary always goes to the run log.
 #
-# MACHINE_OPS_DRY_RUN=1 switches to `mole optimize --dry-run`.
+# MOPS_DRY_RUN=1 switches to `mole optimize --dry-run` (the legacy
+# MACHINE_OPS_DRY_RUN name is still accepted until 0.4.0).
 # Never sudo, never a password: mole requests privilege itself per-operation
 # and degrades cleanly. stdin is /dev/null on every mole invocation.
 
@@ -20,8 +21,8 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # lib/common.sh belongs to the TOOL root, which may differ from this job's
-# automations root. bin/run and bin/run-job export MACHINE_OPS_TOOL_ROOT.
-MACOPS_LIB="${MACHINE_OPS_TOOL_ROOT:-$SCRIPT_DIR/..}/lib"
+# automations root. bin/run and bin/run-job export MOPS_TOOL_ROOT.
+MACOPS_LIB="${MOPS_TOOL_ROOT:-${MACHINE_OPS_TOOL_ROOT:-$SCRIPT_DIR/..}}/lib"
 # shellcheck disable=SC1091 # path resolved at runtime from the tool root
 if ! source "$MACOPS_LIB/common.sh"; then
     printf '10-mole-optimize: cannot load lib/common.sh\n' >&2
@@ -30,7 +31,7 @@ fi
 
 MOLE=/opt/homebrew/bin/mole
 LABEL="mole-optimize"
-DRY="${MACHINE_OPS_DRY_RUN:-0}"
+DRY="${MOPS_DRY_RUN:-${MACHINE_OPS_DRY_RUN:-0}}"
 DISK_MIN_GB=15
 # The score is a noisy sample: six back-to-back reads on an idle machine gave
 # 84 84 84 84 84 83, so "any drop alerts" cried wolf. 5 sits clearly outside

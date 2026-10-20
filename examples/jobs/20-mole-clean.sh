@@ -11,15 +11,16 @@
 # Reclaimed space / item counts are recorded to the run log (best-effort
 # parse — apply-mode wording may differ from dry-run wording).
 #
-# MACHINE_OPS_DRY_RUN=1 switches to `mole clean --dry-run`.
+# MOPS_DRY_RUN=1 switches to `mole clean --dry-run` (the legacy
+# MACHINE_OPS_DRY_RUN name is still accepted until 0.4.0).
 # Never sudo, never a password.
 
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # lib/common.sh belongs to the TOOL root, which may differ from this job's
-# automations root. bin/run and bin/run-job export MACHINE_OPS_TOOL_ROOT.
-MACOPS_LIB="${MACHINE_OPS_TOOL_ROOT:-$SCRIPT_DIR/..}/lib"
+# automations root. bin/run and bin/run-job export MOPS_TOOL_ROOT.
+MACOPS_LIB="${MOPS_TOOL_ROOT:-${MACHINE_OPS_TOOL_ROOT:-$SCRIPT_DIR/..}}/lib"
 # shellcheck disable=SC1091 # path resolved at runtime from the tool root
 if ! source "$MACOPS_LIB/common.sh"; then
     printf '20-mole-clean: cannot load lib/common.sh\n' >&2
@@ -28,7 +29,7 @@ fi
 
 MOLE=/opt/homebrew/bin/mole
 LABEL="mole-clean"
-DRY="${MACHINE_OPS_DRY_RUN:-0}"
+DRY="${MOPS_DRY_RUN:-${MACHINE_OPS_DRY_RUN:-0}}"
 
 if [[ ! -x "$MOLE" ]]; then
     alert "[$LABEL] mole not found at $MOLE"
