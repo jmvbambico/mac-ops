@@ -52,10 +52,12 @@ _COMMON_SH_LOADED=1
 # always wins when both are set.
 #
 # The legacy MACHINE_OPS_* names exist only for compatibility and will be
-# removed in 0.4.0. They are honoured because the owner's own live automations
-# live in a SEPARATE repository that this rename cannot reach; there are no
-# third-party users (the repo has no stars, forks or clones). When those
-# automations are migrated, the legacy reads and exports can go.
+# removed once the owner's automations in ~/projects/machine-ops are migrated
+# (expected 0.5.0; the migration, not the version, is the precondition). They
+# are honoured because the owner's own live automations live in a SEPARATE
+# repository that this rename cannot reach; there are no third-party users (the
+# repo has no stars, forks or clones). When those automations are migrated and
+# verified, the legacy reads and exports can go.
 mops_env_value() {
     local primary="$1" legacy="$2"
     if [[ -n "${!primary:-}" ]]; then
@@ -160,10 +162,11 @@ log_line() {
 # The match is LEXICAL, not a real read detector: it misses non-`$` reads such
 # as `printenv MACHINE_OPS_DRY_RUN` or `os.environ["MACHINE_OPS_DRY_RUN"]` in a
 # quoted heredoc, and can match a comment containing a literal expression.
-# Safety comes from exporting BOTH names unconditionally. So when 0.4.0
-# removes the alias, the absence of notes here is NOT evidence that nothing
-# reads the legacy name: the precondition is that the owner's automations have
-# been migrated and verified directly.
+# Safety comes from exporting BOTH names unconditionally. So when the alias is
+# removed (once the owner's automations in ~/projects/machine-ops are migrated
+# and verified; expected 0.5.0), the absence of notes here is NOT evidence that
+# nothing reads the legacy name: the precondition is that the owner's
+# automations have been migrated and verified directly.
 warn_legacy_dry_run() {
     local file="$1" context="${2:-job}"
     [[ -f "$file" ]] || return 1
@@ -174,7 +177,7 @@ warn_legacy_dry_run() {
     # because the sigil must sit immediately before MOPS (not after MACHINE_).
     if grep -Eq '\$[{]?MACHINE_OPS_DRY_RUN([^A-Za-z0-9_]|$)' "$file" 2>/dev/null \
         && ! grep -Eq '\$[{]?MOPS_DRY_RUN([^A-Za-z0-9_]|$)' "$file" 2>/dev/null; then
-        log_line "${context} reads deprecated MACHINE_OPS_DRY_RUN; migrate to MOPS_DRY_RUN (legacy alias kept until 0.4.0)"
+        log_line "${context} reads deprecated MACHINE_OPS_DRY_RUN; migrate to MOPS_DRY_RUN (legacy alias kept until the owner's automations in ~/projects/machine-ops are migrated; expected 0.5.0)"
         return 0
     fi
     return 1

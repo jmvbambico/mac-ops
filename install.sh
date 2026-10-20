@@ -40,8 +40,9 @@ if ! AUTOMATIONS_ROOT="$(machine_ops_automations_root)"; then
     exit 1
 fi
 export MOPS_AUTOMATIONS_ROOT="$AUTOMATIONS_ROOT"
-# Legacy alias, same value until 0.4.0 (the owner's separate automations repo
-# still reads MACHINE_OPS_*).
+# Legacy alias, same value until the owner's automations in
+# ~/projects/machine-ops are migrated (expected 0.5.0; that separate repo still
+# reads MACHINE_OPS_*).
 export MACHINE_OPS_AUTOMATIONS_ROOT="$AUTOMATIONS_ROOT"
 
 if [[ ! -f "$SRC" ]]; then

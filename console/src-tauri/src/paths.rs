@@ -28,9 +28,11 @@ fn home_dir() -> Option<PathBuf> {
 /// Read `primary`, falling back to `legacy` when primary is unset or empty.
 ///
 /// The new `MOPS_*` name wins when both are set. The legacy `MACHINE_OPS_*`
-/// names exist only for compatibility until 0.4.0: the owner's own live
-/// automations live in a SEPARATE repository this rename cannot reach, and
-/// there are no third-party users. Mirrors `mops_env_value` in lib/common.sh.
+/// names exist only for compatibility until the owner's automations in
+/// `~/projects/machine-ops` are migrated (expected 0.5.0; the migration, not
+/// the version, is the precondition): the owner's own live automations live in
+/// a SEPARATE repository this rename cannot reach, and there are no third-party
+/// users. Mirrors `mops_env_value` in lib/common.sh.
 pub(crate) fn env_alias(primary: &str, legacy: &str) -> Option<std::ffi::OsString> {
     for key in [primary, legacy] {
         if let Some(value) = std::env::var_os(key) {

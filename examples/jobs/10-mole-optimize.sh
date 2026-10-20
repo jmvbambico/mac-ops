@@ -13,7 +13,8 @@
 # Otherwise silent. A one-line summary always goes to the run log.
 #
 # MOPS_DRY_RUN=1 switches to `mole optimize --dry-run` (the legacy
-# MACHINE_OPS_DRY_RUN name is still accepted until 0.4.0).
+# MACHINE_OPS_DRY_RUN name is still accepted until the owner's automations in
+# ~/projects/machine-ops are migrated; expected 0.5.0).
 # Never sudo, never a password: mole requests privilege itself per-operation
 # and degrades cleanly. stdin is /dev/null on every mole invocation.
 
