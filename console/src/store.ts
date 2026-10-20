@@ -40,6 +40,22 @@ export const S = {
   detailRuns: idle<Run[]>(),
   diagnostics: idle<string[]>(),
   paths: idle<ResolvedPathsInfo>(),
+  /**
+   * Inline state for the Settings root editor. `draft` is what the input
+   * renders: typing mirrors into it, and a rejected value stays visible
+   * instead of snapping back to the old root. `saved` is the value the last
+   * successful save wrote to `config.json`; when an environment override is
+   * active it differs from the effective root, and the panel shows both rather
+   * than letting the saved value disappear. After a successful save the draft
+   * keeps that persisted value, so saving again cannot write the effective
+   * env root into the config file.
+   */
+  pathsEdit: {
+    error: null as string | null,
+    busy: false,
+    draft: null as string | null,
+    saved: null as string | null,
+  },
 
   // navigation
   view: "overview" as ViewName,
@@ -168,8 +184,49 @@ export const loadDetailRuns = (file: string, limit = 30): Promise<Run[] | null> 
 
 export const validate = (file: string): Promise<string[] | null> => load(S.diagnostics, () => backend().validateJob(file));
 
-/** Filesystem diagnostics. Read-only: the config is edited outside the GUI. */
+/** Filesystem diagnostics, plus the current automations root for editing. */
 export const loadPaths = (): Promise<ResolvedPathsInfo | null> => load(S.paths, () => backend().resolvedPaths());
+
+/**
+ * Persist a new automations root. The backend validates and writes
+ * `~/.config/mops/config.json` atomically, then returns the paths the next
+ * launch will resolve. We adopt that answer directly (rather than re-reading
+ * `resolved_paths`, which still reports the running App's old root) and keep
+ * any validation error inline so the panel can show it.
+ *
+ * Nothing is re-pointed live: the database and cached jobs belong to the
+ * startup root, so the user is told a restart is required.
+ */
+export async function saveAutomationsRoot(path: string): Promise<boolean> {
+  S.pathsEdit.busy = true;
+  S.pathsEdit.error = null;
+  S.pathsEdit.draft = path;
+  changed();
+  try {
+    const resolved = await backend().setAutomationsRoot(path);
+    S.paths = { data: resolved, error: null, loading: false };
+    S.pathsEdit.error = null;
+    // Remember what was persisted so the panel can show the config value even
+    // when an env override keeps it inactive. Without an override the
+    // re-resolved root IS the config value; with one, the backend still wrote
+    // the trimmed input, so keep that.
+    S.pathsEdit.saved = resolved.source === "env" ? path.trim() : resolved.automations_root;
+    // Keep the persisted value in the editor. Clearing the draft would fall
+    // back to the EFFECTIVE root, so under an env override the next Save would
+    // silently write the env path into config.json instead of the saved one.
+    S.pathsEdit.draft = S.pathsEdit.saved;
+    toast("Automations root saved — restart the console to apply it", "ok");
+    return true;
+  } catch (err) {
+    const msg = errText(err);
+    S.pathsEdit.error = msg;
+    toast(`Could not save the automations root — ${msg}`, "err");
+    return false;
+  } finally {
+    S.pathsEdit.busy = false;
+    changed();
+  }
+}
 
 /** The data each view needs, kicked off when you navigate to it. */
 export function primeView(): void {

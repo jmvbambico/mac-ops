@@ -66,6 +66,14 @@ so maintenance keeps running. `bin/run` and `bin/run-job` export
 `MOPS_TOOL_ROOT`, which is how a job finds `lib/common.sh` even when
 its own directory is the automations root.
 
+The console's **Settings → Paths** panel can write this key for you. It
+accepts an absolute path, creates a directory that does not exist yet with
+`jobs/`, `logs/` and `state/`, and writes the config atomically while keeping
+any unrelated keys. A saved root takes effect when the console restarts — the
+run database and cached jobs stay on the root resolved at launch. If
+`$MOPS_AUTOMATIONS_ROOT` is set, it still overrides the file, so the panel says
+so and keeps showing the effective root until the variable is unset.
+
 The two roots may legitimately be the **same** directory — a git checkout used
 in place, with `jobs/` alongside `bin/`. Point
 `MOPS_AUTOMATIONS_ROOT` at that checkout and everything keeps working;

@@ -64,6 +64,7 @@ p{text-wrap:pretty}
 .win{height:100%;background:var(--panel);overflow:hidden;display:flex;flex-direction:column}
 .titlebar{display:flex;align-items:center;gap:12px;height:46px;padding:0 13px 0 84px;
   border-bottom:.5px solid var(--line);background:var(--side);flex:0 0 auto}
+.tb-brand{display:flex;align-items:center;gap:6px}
 .tb-title{font-weight:600;font-size:13px;letter-spacing:-.01em}
 .tb-title span{color:var(--ink-3);font-weight:400}
 .tb-right{margin-left:auto;display:flex;align-items:center;gap:8px}
