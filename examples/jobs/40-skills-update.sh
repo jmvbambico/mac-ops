@@ -30,8 +30,11 @@
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck disable=SC1091 # path resolved at runtime from the script location
-if ! source "$SCRIPT_DIR/../lib/common.sh"; then
+# lib/common.sh belongs to the TOOL root, which may differ from this job's
+# automations root. bin/run and bin/run-job export MACHINE_OPS_TOOL_ROOT.
+MACOPS_LIB="${MACHINE_OPS_TOOL_ROOT:-$SCRIPT_DIR/..}/lib"
+# shellcheck disable=SC1091 # path resolved at runtime from the tool root
+if ! source "$MACOPS_LIB/common.sh"; then
     printf '40-skills-update: cannot load lib/common.sh\n' >&2
     exit 1
 fi
