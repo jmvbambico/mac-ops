@@ -1,0 +1,82 @@
+name: Gates
+
+on:
+  pull_request:
+    branches: [dev, main]
+  push:
+    branches: [dev, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    name: gates (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: brew install shellcheck
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustc --version
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            console/src-tauri/target
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('console/src-tauri/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: shell-syntax
+        if: ${{ !cancelled() }}
+        run: 'bash -n bin/run && bash -n bin/run-job && bash -n lib/common.sh && bash -n install.sh && bash -n tests/silent-contract.sh && for j in examples/jobs/*.sh tests/fixtures/jobs/*.sh; do bash -n "$j" || exit 1; done'
+
+      - name: shellcheck
+        if: ${{ !cancelled() }}
+        run: 'shellcheck bin/run bin/run-job lib/common.sh install.sh examples/jobs/*.sh tests/silent-contract.sh tests/fixtures/jobs/*.sh'
+
+      - name: rust-check
+        if: ${{ !cancelled() }}
+        run: 'cd console/src-tauri && cargo check --message-format=short'
+
+      - name: rust-test
+        if: ${{ !cancelled() }}
+        run: 'cd console/src-tauri && cargo test --lib'
+
+      - name: frontend-typecheck
+        if: ${{ !cancelled() }}
+        run: 'cd console && npm ci --silent && npx tsc --noEmit'
+
+      - name: frontend-build
+        if: ${{ !cancelled() }}
+        run: 'cd console && npm run build'
+
+      - name: silent-contract
+        if: ${{ !cancelled() }}
+        run: 'bash tests/silent-contract.sh'
