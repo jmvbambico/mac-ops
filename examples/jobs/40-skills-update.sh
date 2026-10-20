@@ -43,7 +43,8 @@ LABEL="skills-update"
 DRY="${MOPS_DRY_RUN:-${MACHINE_OPS_DRY_RUN:-0}}"
 # Test seams: MOPS_SKILL_LOCK points at fixture lockfiles and MOPS_NPX at a
 # stub, so apply paths are provable without touching the live skills
-# installation (legacy MACHINE_OPS_* names accepted until 0.4.0).
+# installation (legacy MACHINE_OPS_* names accepted until the owner's
+# automations in ~/projects/machine-ops are migrated; expected 0.5.0).
 LOCKFILE="${MOPS_SKILL_LOCK:-${MACHINE_OPS_SKILL_LOCK:-$HOME/.agents/.skill-lock.json}}"
 NPX="${MOPS_NPX:-${MACHINE_OPS_NPX:-/opt/homebrew/bin/npx}}"
 

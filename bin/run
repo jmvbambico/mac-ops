@@ -31,7 +31,9 @@
 # legacy MACHINE_OPS_DRY_RUN is exported with the SAME value for the
 # deprecation window: jobs in the owner's separate automations repo still read
 # it, and a job that sees it unset would fall through `:-0` and RUN IN APPLY
-# MODE. Both names stay until 0.4.0.
+# MODE. Both names stay until the owner's automations in
+# ~/projects/machine-ops are migrated (expected 0.5.0); the condition, not the
+# version, decides.
 #
 # Never run under sudo: mole refuses to run as root, so this dispatcher and
 # every job must run as the user, with no sudo and no password handling.
@@ -50,7 +52,8 @@ usage() {
 # same directory (a checkout used in place) but must never be conflated.
 TOOL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export MOPS_TOOL_ROOT="$TOOL_ROOT"
-# Legacy alias, exported with the same value until 0.4.0 (see header).
+# Legacy alias, exported with the same value until the owner's automations in
+# ~/projects/machine-ops are migrated (see header).
 export MACHINE_OPS_TOOL_ROOT="$TOOL_ROOT"
 
 # Per-job wall-clock timeout. Observed baselines: optimize ~20s, clean ~52s
@@ -72,7 +75,8 @@ if ! AUTOMATIONS_ROOT="$(machine_ops_automations_root)"; then
     exit 1
 fi
 export MOPS_AUTOMATIONS_ROOT="$AUTOMATIONS_ROOT"
-# Legacy alias, same value until 0.4.0 (see header).
+# Legacy alias, same value until the owner's automations in
+# ~/projects/machine-ops are migrated (see header).
 export MACHINE_OPS_AUTOMATIONS_ROOT="$AUTOMATIONS_ROOT"
 JOBS_DIR="$AUTOMATIONS_ROOT/jobs"
 LOG_DIR="$AUTOMATIONS_ROOT/logs"
@@ -108,7 +112,8 @@ done
 
 # BOTH names, identical value, every run. Dropping the legacy export here is
 # the silent-apply-mode hazard: the owner's jobs read MACHINE_OPS_DRY_RUN and
-# default it to 0. Until 0.4.0 this is not optional.
+# default it to 0. Until those automations are migrated and verified, this is
+# not optional.
 export MOPS_DRY_RUN="$DRY_RUN"
 export MACHINE_OPS_DRY_RUN="$DRY_RUN"
 
