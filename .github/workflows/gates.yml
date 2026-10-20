@@ -55,11 +55,11 @@ jobs:
 
       - name: shell-syntax
         if: ${{ !cancelled() }}
-        run: 'bash -n bin/run && bash -n bin/run-job && bash -n lib/common.sh && bash -n install.sh && bash -n tests/silent-contract.sh && for j in examples/jobs/*.sh tests/fixtures/jobs/*.sh; do bash -n "$j" || exit 1; done'
+        run: 'bash -n bin/run && bash -n bin/run-job && bash -n lib/common.sh && bash -n install.sh && for j in tests/*.sh examples/jobs/*.sh tests/fixtures/jobs/*.sh; do bash -n "$j" || exit 1; done'
 
       - name: shellcheck
         if: ${{ !cancelled() }}
-        run: 'shellcheck bin/run bin/run-job lib/common.sh install.sh examples/jobs/*.sh tests/silent-contract.sh tests/fixtures/jobs/*.sh'
+        run: 'shellcheck bin/run bin/run-job lib/common.sh install.sh examples/jobs/*.sh tests/*.sh tests/fixtures/jobs/*.sh'
 
       - name: rust-check
         if: ${{ !cancelled() }}
