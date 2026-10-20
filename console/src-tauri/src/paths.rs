@@ -12,7 +12,7 @@
 //! for `run_job_path`.
 use anyhow::{bail, Context, Result};
 use std::os::unix::fs::MetadataExt;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 /// A directory is the tool root when it contains the two things the runner
 /// itself needs. Note that `jobs/` is deliberately NOT part of this test: the
@@ -151,23 +151,6 @@ pub fn config_path() -> Result<PathBuf> {
     Ok(home.join(".config/mops/config.json"))
 }
 
-/// Lexically normalise `.`/`..`/repeated separators without touching the
-/// filesystem. Used before the identity walk so a missing component cannot
-/// hide the real ancestor (see `targets_tool_root`).
-fn lexical_normalize(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                out.pop();
-            }
-            other => out.push(other.as_os_str()),
-        }
-    }
-    out
-}
-
 /// The filesystem identity of an existing path: device + inode. Unlike a
 /// canonical path string this is unaffected by case spelling (APFS is
 /// case-insensitive but case-preserving), symlinks, or hard links — every
@@ -177,46 +160,88 @@ fn file_identity(path: &Path) -> std::io::Result<(u64, u64)> {
     Ok((meta.dev(), meta.ino()))
 }
 
-/// True when `requested` is the tool root itself or lies strictly inside it,
-/// judged by filesystem identity rather than by comparing path strings.
+/// Resolve `requested` to the deepest prefix that exists on disk, following
+/// symlinks and `..` exactly as `create_dir_all` will. Returns the canonical
+/// directory and whether `requested` itself was that directory (no missing
+/// tail left to create).
 ///
-/// `requested` may not exist yet, so walk up to its deepest existing ancestor
-/// and compare every level. An existing path equal to the tool root is the
-/// documented in-place checkout and is allowed; a strict ancestor equal to the
-/// tool root means the target lives inside the tool tree and is rejected.
+/// Anything that exists but cannot be resolved — a dangling symlink, a symlink
+/// loop, a permission error — fails closed: the guard cannot prove the write
+/// stays out of the tool tree, so it must not allow it.
+fn resolve_deepest(requested: &Path) -> Result<(PathBuf, bool)> {
+    let mut candidate = requested.to_path_buf();
+    let mut is_requested = true;
+    loop {
+        match candidate.canonicalize() {
+            Ok(resolved) => return Ok((resolved, is_requested)),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                // Distinguish "missing" from "exists as a dangling symlink":
+                // the latter is present on disk and must not be walked past.
+                match std::fs::symlink_metadata(&candidate) {
+                    Ok(_) => {
+                        return Err(err)
+                            .with_context(|| format!("resolve {}", candidate.display()));
+                    }
+                    Err(meta_err) if meta_err.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(meta_err) => {
+                        return Err(meta_err)
+                            .with_context(|| format!("inspect {}", candidate.display()));
+                    }
+                }
+            }
+            Err(err) => {
+                return Err(err).with_context(|| format!("resolve {}", candidate.display()));
+            }
+        }
+        match candidate.parent() {
+            Some(parent) => {
+                is_requested = false;
+                candidate = parent.to_path_buf();
+            }
+            None => {
+                bail!(
+                    "cannot resolve any existing ancestor of {}",
+                    requested.display()
+                );
+            }
+        }
+    }
+}
+
+/// True when `requested` is the tool root itself or lies strictly inside it.
 ///
-/// Both the lexically normalised and the raw spelling are checked. The
-/// normalised form catches `tool/missing/../user-data` (which resolves inside
-/// the tool); the raw form catches `tool/missing/../../outside`, where
-/// `create_dir_all` would first create `tool/missing` even though the final
-/// target is outside. TOCTOU between this check and `ensure_dirs` is accepted:
-/// this is a single-user settings write, not a privilege boundary.
+/// The check runs on the RESOLVED path, not on lexical ancestors: `create_dir_all`
+/// follows symlinks, so validating the unresolved spelling lets a symlink from
+/// outside into a tool subdirectory escape the guard. `resolve_deepest` returns
+/// the canonical existing ancestor; anything the caller then creates lives
+/// below it, so only that directory and its real parents matter.
+///
+/// An existing directory equal to the tool root is the documented in-place
+/// checkout and is allowed; a strict ancestor equal to it (or the root with a
+/// missing tail) means the target lands inside the tool tree and is rejected.
+/// Identity comparison keeps this immune to case spelling, symlinks and hard
+/// links. TOCTOU between this check and `ensure_dirs` is accepted: this is a
+/// single-user settings write, not a privilege boundary.
 fn targets_tool_root(requested: &Path, tool_root: &Path) -> Result<bool> {
     let tool = file_identity(tool_root)
         .with_context(|| format!("inspect the tool root {}", tool_root.display()))?;
-    Ok(inside_tool_tree(&lexical_normalize(requested), tool) || inside_tool_tree(requested, tool))
-}
+    let (resolved, is_requested) = resolve_deepest(requested)?;
 
-/// Walk `path` and its ancestors, comparing each existing level against the
-/// tool root's identity. Reaching the tool root as the requested path itself
-/// (an in-place checkout) is fine; reaching it as an ancestor is not.
-fn inside_tool_tree(path: &Path, tool: (u64, u64)) -> bool {
-    let mut current = path;
-    let mut is_requested = true;
-    loop {
-        if let Ok(identity) = file_identity(current) {
-            if identity == tool {
-                return !is_requested;
-            }
-        }
-        match current.parent() {
-            Some(parent) => {
-                is_requested = false;
-                current = parent;
-            }
-            None => return false,
-        }
+    if file_identity(&resolved).with_context(|| format!("inspect {}", resolved.display()))? == tool
+    {
+        // The tool root itself is allowed; a not-yet-existing path below it is
+        // not (it would be created inside the tool tree).
+        return Ok(!is_requested);
     }
+
+    let mut ancestor = resolved.parent();
+    while let Some(dir) = ancestor {
+        if file_identity(dir).with_context(|| format!("inspect {}", dir.display()))? == tool {
+            return Ok(true);
+        }
+        ancestor = dir.parent();
+    }
+    Ok(false)
 }
 
 /// Read the config as a generic object so an unrelated key written by the user
@@ -260,6 +285,7 @@ fn write_atomic(path: &Path, contents: &str) -> Result<()> {
     // components make a collision implausible, and AlreadyExists retries.
     let (tmp, mut file) = {
         let mut created = None;
+        let mut last_collision = None;
         for attempt in 0..16u32 {
             let nanos = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -278,32 +304,46 @@ fn write_atomic(path: &Path, contents: &str) -> Result<()> {
                     created = Some((candidate, file));
                     break;
                 }
-                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                    last_collision = Some(err);
+                    continue;
+                }
                 Err(err) => {
                     return Err(err).with_context(|| format!("create {}", candidate.display()));
                 }
             }
         }
         created.ok_or_else(|| {
+            let detail = last_collision
+                .map(|err| format!(": {err}"))
+                .unwrap_or_default();
             anyhow::anyhow!(
-                "could not create a unique temp file next to {}",
+                "temp-file creation collided repeatedly next to {}{detail}",
                 path.display()
             )
         })?
     };
 
     let result = (|| -> Result<()> {
+        // Open the directory before the rename: if this fails, the save has not
+        // happened yet. The handle is still valid after the rename.
+        let dir_file = std::fs::File::open(dir)
+            .with_context(|| format!("open directory {}", dir.display()))?;
         file.write_all(contents.as_bytes())
             .with_context(|| format!("write {}", tmp.display()))?;
         file.sync_all()
             .with_context(|| format!("flush {}", tmp.display()))?;
         std::fs::rename(&tmp, path)
             .with_context(|| format!("rename {} to {}", tmp.display(), path.display()))?;
-        let dir_file = std::fs::File::open(dir)
-            .with_context(|| format!("open directory {}", dir.display()))?;
-        dir_file
-            .sync_all()
-            .with_context(|| format!("flush directory {}", dir.display()))?;
+        // The rename has already replaced the file. A failed directory sync
+        // must not look like "the save failed" — the new value is live, only
+        // its durability is unconfirmed — so say exactly that.
+        dir_file.sync_all().with_context(|| {
+            format!(
+                "the config was saved to {} but its directory could not be fsynced, so durability is not confirmed",
+                path.display()
+            )
+        })?;
         Ok(())
     })();
 
@@ -1149,6 +1189,82 @@ mod tests {
             !tool.join("user-data").exists(),
             "nothing may be created under the tool root"
         );
+        assert!(!cfg.exists());
+    }
+
+    /// Regression: a symlink from OUTSIDE the tool tree into a tool
+    /// SUBDIRECTORY. The old walk compared lexical ancestors; the alias
+    /// resolves to `<tool>/jobs`, whose identity is not the tool root, so the
+    /// walk escaped to `/` and `ensure_dirs` wrote inside the installed tool.
+    #[test]
+    fn set_config_root_rejects_a_symlink_to_a_tool_subdirectory() {
+        let base = Tmp::new("set-symlink-child");
+        let home = base.path().join("home");
+        let tool = base.path().join("tool");
+        make_tool_root(&tool);
+        std::fs::create_dir_all(tool.join("jobs")).unwrap();
+
+        let outside = base.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        let alias = outside.join("alias");
+        std::os::unix::fs::symlink(tool.join("jobs"), &alias).unwrap();
+        let cfg = home.join(".config/mops/config.json");
+
+        let requested = alias.join("new-root");
+        let err = set_config_root(&cfg, &tool, requested.to_str().unwrap())
+            .expect_err("a symlink into a tool subdirectory must be rejected")
+            .to_string();
+        assert!(err.contains("inside the MacOps tool directory"), "{err}");
+        assert!(
+            !tool.join("jobs/new-root").exists(),
+            "nothing may be created under the tool root"
+        );
+        assert!(!cfg.exists());
+    }
+
+    /// Reaching the tool root itself through a symlink, with no tail to create,
+    /// is still the documented in-place checkout and must be allowed.
+    #[test]
+    fn set_config_root_allows_the_tool_root_reached_through_a_symlink() {
+        let base = Tmp::new("set-symlink-root-ok");
+        let home = base.path().join("home");
+        let tool = base.path().join("tool");
+        make_tool_root(&tool);
+        let link = base.path().join("tool-link");
+        std::os::unix::fs::symlink(&tool, &link).unwrap();
+        let cfg = home.join(".config/mops/config.json");
+
+        set_config_root(&cfg, &tool, link.to_str().unwrap()).unwrap();
+
+        for sub in ["jobs", "logs", "state"] {
+            assert!(tool.join(sub).is_dir(), "in-place checkout gets {sub}/");
+        }
+        assert!(tool.join("bin/run").is_file(), "tool files must survive");
+        assert!(cfg.is_file(), "the setting is saved");
+    }
+
+    /// A dangling symlink exists on disk but cannot be resolved. The guard
+    /// cannot know where `create_dir_all` would follow it, so it must fail
+    /// closed rather than assume the path is outside the tool tree.
+    #[test]
+    fn set_config_root_rejects_an_unresolvable_symlink_in_the_path() {
+        let base = Tmp::new("set-symlink-dangling");
+        let home = base.path().join("home");
+        let tool = base.path().join("tool");
+        make_tool_root(&tool);
+
+        let outside = base.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        let dangling = outside.join("dangling");
+        std::os::unix::fs::symlink(tool.join("missing"), &dangling).unwrap();
+        let cfg = home.join(".config/mops/config.json");
+
+        let requested = dangling.join("new-root");
+        let err = set_config_root(&cfg, &tool, requested.to_str().unwrap())
+            .expect_err("an unresolvable symlink must fail closed")
+            .to_string();
+        assert!(err.contains("resolve"), "{err}");
+        assert!(!tool.join("missing").exists());
         assert!(!cfg.exists());
     }
 
