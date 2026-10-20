@@ -121,7 +121,7 @@ describe("Settings paths — saving", () => {
 
     expect(ok).toBe(true);
     expect(S.paths.data?.automations_root).toBe(CONFIG_ROOT);
-    expect(S.pathsEdit.draft).toBeNull();
+    expect(S.pathsEdit.draft).toBe(CONFIG_ROOT);
     expect(S.pathsEdit.saved).toBe(CONFIG_ROOT);
 
     const html = vSettings();
@@ -145,7 +145,24 @@ describe("Settings paths — saving", () => {
     expect(html).toContain(CONFIG_ROOT);
     expect(html).toContain(ENV_ROOT);
     expect(html).toContain("is set and overrides the config file");
-    // The input still shows the effective root, not the inactive saved one.
-    expect(html).toContain(`value="${ENV_ROOT}"`);
+    // The editor keeps the saved value, not the effective env root: saving
+    // again must not silently overwrite config.json with the env path.
+    expect(html).toContain(`value="${CONFIG_ROOT}"`);
+    expect(html).not.toContain(`value="${ENV_ROOT}"`);
+  });
+});
+
+describe("Settings paths — draft durability", () => {
+  it("keeps a typed draft when an unrelated state change repaints the panel", () => {
+    showPaths(resolved({ automations_root: ENV_ROOT, source: "env" }));
+    const typed = "/Volumes/New/root";
+    S.pathsEdit.draft = typed;
+
+    // An auto-dismissing toast is the confirmed repaint trigger: clearing it
+    // calls changed() -> render() -> vSettings().
+    S.toast = { msg: "Automations root saved — restart the console to apply it", kind: "ok", id: 1 };
+    S.toast = null;
+
+    expect(vSettings()).toContain(`value="${typed}"`);
   });
 });

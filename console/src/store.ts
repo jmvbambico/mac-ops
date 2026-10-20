@@ -41,11 +41,14 @@ export const S = {
   diagnostics: idle<string[]>(),
   paths: idle<ResolvedPathsInfo>(),
   /**
-   * Inline state for the Settings root editor. `draft` keeps a rejected value
-   * visible instead of snapping the input back to the old root. `saved` is the
-   * value the last successful save wrote to `config.json`; when an environment
-   * override is active it differs from the effective root, and the panel shows
-   * both rather than letting the saved value disappear.
+   * Inline state for the Settings root editor. `draft` is what the input
+   * renders: typing mirrors into it, and a rejected value stays visible
+   * instead of snapping back to the old root. `saved` is the value the last
+   * successful save wrote to `config.json`; when an environment override is
+   * active it differs from the effective root, and the panel shows both rather
+   * than letting the saved value disappear. After a successful save the draft
+   * keeps that persisted value, so saving again cannot write the effective
+   * env root into the config file.
    */
   pathsEdit: {
     error: null as string | null,
@@ -203,12 +206,15 @@ export async function saveAutomationsRoot(path: string): Promise<boolean> {
     const resolved = await backend().setAutomationsRoot(path);
     S.paths = { data: resolved, error: null, loading: false };
     S.pathsEdit.error = null;
-    S.pathsEdit.draft = null;
     // Remember what was persisted so the panel can show the config value even
     // when an env override keeps it inactive. Without an override the
     // re-resolved root IS the config value; with one, the backend still wrote
     // the trimmed input, so keep that.
     S.pathsEdit.saved = resolved.source === "env" ? path.trim() : resolved.automations_root;
+    // Keep the persisted value in the editor. Clearing the draft would fall
+    // back to the EFFECTIVE root, so under an env override the next Save would
+    // silently write the env path into config.json instead of the saved one.
+    S.pathsEdit.draft = S.pathsEdit.saved;
     toast("Automations root saved — restart the console to apply it", "ok");
     return true;
   } catch (err) {

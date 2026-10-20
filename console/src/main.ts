@@ -1132,6 +1132,14 @@ document.addEventListener("input", (e) => {
     palIndex = 0;
     renderPalette();
   }
+  if (el.id === "root-input") {
+    // Mirror the edit into the draft so an unrelated repaint (a toast
+    // auto-dismiss, a background load) cannot reset what the user is typing.
+    // Unlike the search fields above, there is nothing to filter live, so
+    // deliberately do NOT render() here — repainting the input being typed
+    // into is exactly what loses the caret and the value.
+    S.pathsEdit.draft = el.value;
+  }
 });
 
 document.addEventListener("keydown", (e) => {
