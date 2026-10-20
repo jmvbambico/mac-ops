@@ -164,7 +164,7 @@ export function fakeBackend(): Backend {
     async resolvedPaths() {
       return {
         tool_root: "/opt/mac-ops/tool",
-        automations_root: "~/mac-ops",
+        automations_root: "~/.mops",
         config_path: "~/.config/mops/config.json",
         source: "default" as const,
       };

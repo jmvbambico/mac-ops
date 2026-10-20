@@ -38,13 +38,17 @@ export function vSettings(): string {
     ${asyncPanel(S.paths, "Resolved paths unavailable", "paths", (p) => `
     <dl class="kv">
       <dt>Tool root</dt><dd class="mono">${esc(p.tool_root)}</dd>
-      <dt>Automations root</dt><dd class="mono">${esc(p.automations_root)}
-        <span class="badge tier" style="margin-left:5px">${esc(p.source)}</span></dd>
+      <dt>Automations root</dt><dd class="mono">${esc(p.automations_root)}${
+        p.source ? `<span class="badge tier" style="margin-left:5px">${esc(p.source)}</span>` : ""
+      }</dd>
       <dt>Config file</dt><dd class="mono">${esc(p.config_path)}</dd>
     </dl>
-    <div class="muted" style="font-size:11.5px">Read-only diagnostics. The automations root is resolved from
-      <span class="mono">MACHINE_OPS_ROOT</span>, then the config file, then the conventional default — it is
-      deliberately not editable from the GUI.</div>`)}
+    <div class="muted" style="font-size:11.5px">Read-only diagnostics. The tool root comes from
+      <span class="mono">MACHINE_OPS_TOOL_ROOT</span> or the executable's own location. The automations root
+      comes from <span class="mono">MACHINE_OPS_AUTOMATIONS_ROOT</span>, then the
+      <span class="mono">automations_root</span> key in
+      <span class="mono">~/.config/mops/config.json</span>, then <span class="mono">~/.mops</span>.
+      Neither root is editable from the GUI.</div>`)}
   </div>
 
   <div class="sec-h"><h3>Run database</h3><span class="ln"></span></div>
