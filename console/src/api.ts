@@ -15,9 +15,9 @@ import type { DayStat, Job, NewJob, Run, RunOutcome, Schedule } from "./types";
 export type PathSource = "env" | "config" | "default";
 
 /**
- * Roots the backend resolved at startup. Read-only diagnostics for Settings —
- * the automations root is configured through the environment or config file,
- * never from the GUI.
+ * Roots the backend resolved at startup. Settings renders these and can write
+ * the automations root to the config file; the change applies on restart,
+ * and `$MOPS_AUTOMATIONS_ROOT` still wins while it is set.
  */
 export interface ResolvedPaths {
   tool_root: string;
@@ -65,6 +65,8 @@ export function parseResolvedPaths(raw: unknown): ResolvedPathsInfo {
 export interface Backend {
   listJobs(): Promise<Job[]>;
   resolvedPaths(): Promise<ResolvedPathsInfo>;
+  /** Persist a new automations root; resolves to the paths the next launch uses. */
+  setAutomationsRoot(path: string): Promise<ResolvedPathsInfo>;
   setEnabled(file: string, enabled: boolean): Promise<void>;
   setSchedule(file: string, schedule: Schedule): Promise<void>;
   setTimeout(file: string, secs: number): Promise<void>;
@@ -89,6 +91,8 @@ export interface Backend {
 export const tauriBackend: Backend = {
   listJobs: () => invoke<Job[]>("list_jobs"),
   resolvedPaths: () => invoke<unknown>("resolved_paths").then(parseResolvedPaths),
+  setAutomationsRoot: (path) =>
+    invoke<unknown>("set_automations_root", { path }).then(parseResolvedPaths),
   setEnabled: (file, enabled) => invoke<void>("set_enabled", { file, enabled }),
   setSchedule: (file, schedule) => invoke<void>("set_schedule", { file, schedule }),
   setTimeout: (file, secs) => invoke<void>("set_timeout", { file, secs }),

@@ -40,6 +40,11 @@ export const S = {
   detailRuns: idle<Run[]>(),
   diagnostics: idle<string[]>(),
   paths: idle<ResolvedPathsInfo>(),
+  /**
+   * Inline state for the Settings root editor. `draft` keeps a rejected value
+   * visible instead of snapping the input back to the old root.
+   */
+  pathsEdit: { error: null as string | null, busy: false, draft: null as string | null },
 
   // navigation
   view: "overview" as ViewName,
@@ -168,8 +173,41 @@ export const loadDetailRuns = (file: string, limit = 30): Promise<Run[] | null> 
 
 export const validate = (file: string): Promise<string[] | null> => load(S.diagnostics, () => backend().validateJob(file));
 
-/** Filesystem diagnostics. Read-only: the config is edited outside the GUI. */
+/** Filesystem diagnostics, plus the current automations root for editing. */
 export const loadPaths = (): Promise<ResolvedPathsInfo | null> => load(S.paths, () => backend().resolvedPaths());
+
+/**
+ * Persist a new automations root. The backend validates and writes
+ * `~/.config/mops/config.json` atomically, then returns the paths the next
+ * launch will resolve. We adopt that answer directly (rather than re-reading
+ * `resolved_paths`, which still reports the running App's old root) and keep
+ * any validation error inline so the panel can show it.
+ *
+ * Nothing is re-pointed live: the database and cached jobs belong to the
+ * startup root, so the user is told a restart is required.
+ */
+export async function saveAutomationsRoot(path: string): Promise<boolean> {
+  S.pathsEdit.busy = true;
+  S.pathsEdit.error = null;
+  S.pathsEdit.draft = path;
+  changed();
+  try {
+    const resolved = await backend().setAutomationsRoot(path);
+    S.paths = { data: resolved, error: null, loading: false };
+    S.pathsEdit.error = null;
+    S.pathsEdit.draft = null;
+    toast("Automations root saved — restart the console to apply it", "ok");
+    return true;
+  } catch (err) {
+    const msg = errText(err);
+    S.pathsEdit.error = msg;
+    toast(`Could not save the automations root — ${msg}`, "err");
+    return false;
+  } finally {
+    S.pathsEdit.busy = false;
+    changed();
+  }
+}
 
 /** The data each view needs, kicked off when you navigate to it. */
 export function primeView(): void {

@@ -37,6 +37,7 @@ import {
   onChange,
   primeView,
   refreshJobs,
+  saveAutomationsRoot,
   setEnabled,
   setMeta,
   setSchedule,
@@ -889,7 +890,7 @@ const CLICKABLE =
   "[data-grpopen],[data-status],[data-groupby],[data-bulk],[data-mode],[data-wday],[data-setevery]," +
   "[data-addtime],[data-deltime],[data-settimeout],[data-settitle],[data-validate],[data-clearf],[data-close]," +
   "[data-confirmdel],[data-confirmdeep],[data-run-confirm],[data-stagger-preview],[data-stagger-apply]," +
-  "[data-retry],[data-theme-set],[data-reindex],[data-prune]," +
+  "[data-retry],[data-theme-set],[data-reindex],[data-prune],[data-set-root]," +
   "#btn-add,#btn-add2,#btn-theme,#btn-pal,#btn-refresh,#log-group,#log-flat";
 
 document.addEventListener("click", (e) => {
@@ -1067,6 +1068,10 @@ document.addEventListener("click", (e) => {
   if (d.prune !== undefined) {
     const days = numberValue("#prune-days", 90);
     void mutate(`Pruned runs older than ${days} days`, () => backend().pruneRuns(days));
+    return;
+  }
+  if (d.setRoot !== undefined) {
+    void saveAutomationsRoot(inputValue("#root-input"));
   }
 });
 
@@ -1140,6 +1145,16 @@ document.addEventListener("keydown", (e) => {
       e.preventDefault();
       closeModal();
     }
+    return;
+  }
+  if (
+    e.key === "Enter" &&
+    e.target instanceof HTMLInputElement &&
+    e.target.id === "root-input" &&
+    !S.pathsEdit.busy
+  ) {
+    e.preventDefault();
+    void saveAutomationsRoot(e.target.value);
     return;
   }
   if (!S.palOpen) return;
