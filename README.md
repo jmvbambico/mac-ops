@@ -34,7 +34,45 @@ rather than an empty row.
 - **launchd, not cron.** A missed run (laptop asleep at 02:00) is coalesced
   and fires once on wake — not zero times, and not as a catch-up burst.
 - **The tool and your automations are separate.** This repo is the tool. Your
-  jobs, logs and state live in your own directory.
+  jobs, logs and state live in your own directory. See
+  [Two roots](#two-roots) below.
+
+## Two roots
+
+MacOps resolves two independent directories and never assumes they are the
+same:
+
+| Root | Holds | Default |
+|---|---|---|
+| **Tool root** | `bin/`, `lib/` — the installed code | derived from the script/executable location |
+| **Automations root** | `jobs/`, `logs/`, `state/` — your data | `~/.mops` |
+
+Resolution, first hit wins:
+
+- **Tool root:** `$MACHINE_OPS_TOOL_ROOT`, otherwise upward from the running
+  executable and then the current directory (looking for `bin/run` and
+  `lib/common.sh`).
+- **Automations root:** `$MACHINE_OPS_AUTOMATIONS_ROOT`, otherwise
+  `automations_root` in `~/.config/mops/config.json`, otherwise `~/.mops`.
+
+`~/.config/mops/config.json` looks like:
+
+```json
+{"automations_root": "/Volumes/Backup/macops"}
+```
+
+A missing config file is normal; a malformed one falls through to `~/.mops`
+so maintenance keeps running. `bin/run` and `bin/run-job` export
+`MACHINE_OPS_TOOL_ROOT`, which is how a job finds `lib/common.sh` even when
+its own directory is the automations root.
+
+The two roots may legitimately be the **same** directory — a git checkout used
+in place, with `jobs/` alongside `bin/`. Point
+`MACHINE_OPS_AUTOMATIONS_ROOT` at that checkout and everything keeps working;
+nothing writes user data into the tool directory just because they coincide.
+
+`install.sh` resolves the automations root when it renders the LaunchAgent and
+pins it in the plist, so launchd and `bin/run` always agree.
 
 ## Adding an automation
 
@@ -45,6 +83,10 @@ One file in your automations directory:
 # tier: daily
 # timeout: 900
 set -u
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The tool root is exported by bin/run/bin/run-job; the fallback supports a
+# checkout used in place (jobs/ beside lib/).
+MACOPS_LIB="${MACHINE_OPS_TOOL_ROOT:-$SCRIPT_DIR/..}/lib"
 source "$MACOPS_LIB/common.sh"
 LABEL="my-thing"
 

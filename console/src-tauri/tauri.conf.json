@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "console",
-  "version": "0.1.0",
-  "identifier": "com.cryogenix.console",
+  "productName": "MacOps",
+  "version": "0.2.0",
+  "identifier": "ai.machineops.console",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -13,9 +13,14 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "console",
-        "width": 800,
-        "height": 600
+        "title": "MacOps",
+        "width": 1180,
+        "height": 820,
+        "minWidth": 960,
+        "minHeight": 640,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": { "x": 20, "y": 25 }
       }
     ],
     "security": {

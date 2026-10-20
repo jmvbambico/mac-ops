@@ -14,11 +14,11 @@ gates:
   # no scope      -> runs ONCE on the integration branch.
 
   - name: shell-syntax
-    run: "bash -n bin/run && bash -n bin/run-job && bash -n lib/common.sh && bash -n install.sh && for j in examples/jobs/*.sh; do bash -n \"$j\" || exit 1; done"
+    run: "bash -n bin/run && bash -n bin/run-job && bash -n lib/common.sh && bash -n install.sh && bash -n tests/silent-contract.sh && for j in examples/jobs/*.sh tests/fixtures/jobs/*.sh; do bash -n \"$j\" || exit 1; done"
     scope: worker
 
   - name: shellcheck
-    run: "shellcheck bin/run bin/run-job lib/common.sh install.sh examples/jobs/*.sh"
+    run: "shellcheck bin/run bin/run-job lib/common.sh install.sh examples/jobs/*.sh tests/silent-contract.sh tests/fixtures/jobs/*.sh"
     scope: worker
 
   - name: rust-check
@@ -37,12 +37,15 @@ gates:
   - name: frontend-build
     run: "cd console && npm run build"
 
-  # TODO (first PR): add tests/silent-contract.sh — run bin/run against a
-  # SYNTHETIC fixture automations root whose jobs are known-silent, and assert
-  # stdout is empty. It must be hermetic: the gate may never invoke the real
-  # mole/brew on a contributor's machine. Register it here as an unscoped gate
-  # once it exists. Deliberately not listed yet: og's rule is that a gate
-  # command which is wrong is worse than one that is absent.
+  # Unscoped on purpose: the silent-contract gate asserts that a nominal run
+  # prints NOTHING to stdout (AGENTS.md Principle I). It runs bin/run against
+  # a SYNTHETIC automations root whose jobs are known-silent, in a temp dir,
+  # with HOME redirected — it never touches the real logs, the real
+  # ~/.mops, or any package manager. It still belongs to the integration
+  # branch: it exercises the real dispatcher, so it must run once, against
+  # the merged runner, not per worktree.
+  - name: silent-contract
+    run: "bash tests/silent-contract.sh"
 
 never_write:
   - "logs/**"

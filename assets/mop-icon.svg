@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0.3" y2="1">
+      <stop offset="0" stop-color="#3B82F6"/>
+      <stop offset="0.55" stop-color="#2056C7"/>
+      <stop offset="1" stop-color="#15307A"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.26"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="wood" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#E3C292"/>
+      <stop offset="0.45" stop-color="#C08F56"/>
+      <stop offset="1" stop-color="#7E5730"/>
+    </linearGradient>
+    <linearGradient id="metal" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#E6ECF3"/>
+      <stop offset="0.45" stop-color="#9FB0C2"/>
+      <stop offset="1" stop-color="#5E7085"/>
+    </linearGradient>
+    <linearGradient id="yarn" x1="0" y1="0" x2="0.2" y2="1">
+      <stop offset="0" stop-color="#FFFBF0"/>
+      <stop offset="0.6" stop-color="#F6E2B8"/>
+      <stop offset="1" stop-color="#D9B77E"/>
+    </linearGradient>
+    <filter id="drop" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="14" stdDeviation="20" flood-color="#0A1B45" flood-opacity="0.42"/>
+    </filter>
+  </defs>
+
+  <rect width="1024" height="1024" rx="228" fill="url(#bg)"/>
+  <path d="M0 228A228 228 0 0 1 228 0h568a228 228 0 0 1 228 228v250C760 430 300 404 0 540z" fill="url(#gloss)"/>
+
+  <g filter="url(#drop)" transform="rotate(-20 512 540)">
+    <!-- handle -->
+    <rect x="478" y="128" width="68" height="392" rx="34" fill="url(#wood)"/>
+    <rect x="498" y="150" width="14" height="348" rx="7" fill="#ffffff" opacity="0.22"/>
+    <!-- ferrule -->
+    <rect x="440" y="494" width="144" height="74" rx="22" fill="url(#metal)"/>
+    <rect x="440" y="516" width="144" height="12" fill="#48596B" opacity="0.45"/>
+    <!-- mop head -->
+    <path d="M446 560h132c34 0 60 22 68 54l44 170c8 32-16 62-49 62H383c-33 0-57-30-49-62l44-170c8-32 34-54 68-54z" fill="url(#yarn)"/>
+    <!-- strand separations -->
+    <g stroke="#C2995E" stroke-opacity="0.55" stroke-width="11" stroke-linecap="round">
+      <path d="M452 606l-30 218"/>
+      <path d="M512 606v218"/>
+      <path d="M572 606l30 218"/>
+      <path d="M632 614l28 206"/>
+      <path d="M392 614l-28 206"/>
+    </g>
+    <path d="M446 560h132c34 0 60 22 68 54H378c8-32 34-54 68-54z" fill="#ffffff" opacity="0.30"/>
+  </g>
+</svg>

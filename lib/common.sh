@@ -26,13 +26,75 @@ if [[ -n "${_COMMON_SH_LOADED:-}" ]]; then
 fi
 _COMMON_SH_LOADED=1
 
+# ---------------------------------------------------------------------------
+# Automations root resolution (AGENTS.md Principle II).
+#
+# The tool root (this file's directory) holds bin/ and lib/. The AUTOMATIONS
+# root holds the user's jobs/, logs/ and state/. They may be the same
+# directory (a checkout used in place) but must never be assumed to be.
+#
+# Precedence, first hit wins:
+#   1. $MACHINE_OPS_AUTOMATIONS_ROOT
+#   2. automations_root in ~/.config/mops/config.json
+#   3. $HOME/.mops  (the default)
+#
+# A missing config is normal. A malformed config falls through to the default
+# instead of aborting: a job that quietly never runs is the worst failure
+# mode here (Principle IV).
+#
+# Prints the root on stdout (callers capture it). Diagnostics go to stderr;
+# nothing here may ever write to a nominal run's stdout.
+# ---------------------------------------------------------------------------
+machine_ops_config_path() {
+    [[ -n "${HOME:-}" ]] || return 1
+    printf '%s\n' "$HOME/.config/mops/config.json"
+}
+
+machine_ops_automations_root() {
+    if [[ -n "${MACHINE_OPS_AUTOMATIONS_ROOT:-}" ]]; then
+        printf '%s\n' "$MACHINE_OPS_AUTOMATIONS_ROOT"
+        return 0
+    fi
+
+    local config_file="" config_root=""
+    config_file="$(machine_ops_config_path 2>/dev/null || true)"
+    if [[ -n "$config_file" && -f "$config_file" ]]; then
+        # Same python3 dependency already used by record_run/bin/run; no jq.
+        config_root="$(/usr/bin/python3 - "$config_file" <<'PY' 2>/dev/null
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as fh:
+        data = json.load(fh)
+    value = data.get("automations_root") if isinstance(data, dict) else None
+    if isinstance(value, str) and value.strip():
+        print(value.strip())
+except Exception:
+    pass
+PY
+)" || config_root=""
+    fi
+
+    if [[ -n "$config_root" ]]; then
+        printf '%s\n' "$config_root"
+        return 0
+    fi
+    if [[ -n "${HOME:-}" ]]; then
+        printf '%s\n' "$HOME/.mops"
+        return 0
+    fi
+    printf 'lib/common.sh: cannot resolve the automations root (HOME is not set)\n' >&2
+    return 1
+}
+
 # Default log location when the dispatcher has not exported one (e.g. a job
-# run by hand for debugging). Always absolute, anchored at this file.
+# run by hand for debugging). It belongs to the AUTOMATIONS root, never to
+# the tool directory.
 if [[ -z "${MACHINE_OPS_LOG:-}" ]]; then
-    _COMMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    MACHINE_OPS_LOG="$_COMMON_DIR/../logs/machine-ops.log"
-    export MACHINE_OPS_LOG
-    unset _COMMON_DIR
+    if _COMMON_AUTOMATIONS_ROOT="$(machine_ops_automations_root)"; then
+        MACHINE_OPS_LOG="$_COMMON_AUTOMATIONS_ROOT/logs/machine-ops.log"
+        export MACHINE_OPS_LOG
+    fi
+    unset _COMMON_AUTOMATIONS_ROOT
 fi
 
 # ts — current local time, log-friendly.

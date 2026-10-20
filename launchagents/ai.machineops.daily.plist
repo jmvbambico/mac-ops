@@ -11,7 +11,7 @@
         <string>daily</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>__REPO_ROOT__</string>
+    <string>__AUTOMATIONS_ROOT__</string>
     <key>StartCalendarInterval</key>
     <dict>
         <key>Hour</key>
@@ -22,15 +22,17 @@
     <key>RunAtLoad</key>
     <false/>
     <key>StandardOutPath</key>
-    <string>__REPO_ROOT__/logs/launchd-stdout.log</string>
+    <string>__AUTOMATIONS_ROOT__/logs/launchd-stdout.log</string>
     <key>StandardErrorPath</key>
-    <string>__REPO_ROOT__/logs/launchd-stderr.log</string>
+    <string>__AUTOMATIONS_ROOT__/logs/launchd-stderr.log</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>HOME</key>
         <string>__HOME__</string>
+        <key>MACHINE_OPS_AUTOMATIONS_ROOT</key>
+        <string>__AUTOMATIONS_ROOT__</string>
     </dict>
 </dict>
 </plist>
