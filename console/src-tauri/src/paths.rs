@@ -476,6 +476,12 @@ pub fn state_file(automations_root: &Path) -> PathBuf {
 pub fn run_log(automations_root: &Path) -> PathBuf {
     automations_root.join("logs/machine-ops.log")
 }
+/// The structured run feed written by `record_run` in lib/common.sh. It is an
+/// index feed, not the durable record; the console prefers it and falls back
+/// to `run_log` for a rebuild.
+pub fn runs_jsonl(automations_root: &Path) -> PathBuf {
+    automations_root.join("logs/runs.jsonl")
+}
 /// The SQLite index. Derived data only — never the source of truth.
 pub fn db_file(automations_root: &Path) -> PathBuf {
     automations_root.join("state/console.db")

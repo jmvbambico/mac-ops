@@ -90,7 +90,8 @@ export function vSettings(): string {
   <div class="sec-h"><h3>Run database</h3><span class="ln"></span></div>
   <div class="card pad col" style="gap:11px">
     <div class="muted" style="font-size:11.5px">Outcomes live in <span class="mono">state/console.db</span>.
-      Reindex re-ingests <span class="mono">logs/machine-ops.log</span>; pruning drops run rows older than
+      Reindex re-ingests <span class="mono">logs/machine-ops.log</span> and
+      <span class="mono">logs/runs.jsonl</span>; pruning drops run rows older than
       the window you keep.</div>
     <div class="row" style="gap:9px;flex-wrap:wrap">
       <button class="btn" data-reindex>${IC.refresh} Reindex from log</button>

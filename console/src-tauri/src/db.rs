@@ -269,10 +269,101 @@ impl Db {
         Ok(n)
     }
 
+    /// Ingest the structured feed `record_run` appends to logs/runs.jsonl.
+    /// This is the PRIMARY source: it carries the producer's own status, so
+    /// the console never re-derives it from prose. `ingest_log` stays the
+    /// rebuild path for history that predates the feed (or a lost feed).
+    ///
+    /// Tolerant by contract: a missing file is "nothing to index", never an
+    /// error; a malformed, half-written or truncated line is skipped and the
+    /// remaining lines still land. Idempotent via the same upsert on
+    /// (job, started_at) that `ingest_log` uses.
+    pub fn ingest_runs_jsonl(&self, runs: &Path) -> Result<usize> {
+        let Some(text) = read_log(runs) else {
+            return Ok(0);
+        };
+        let mut records: Vec<NewRun> = Vec::new();
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let Ok(rec) = serde_json::from_str::<RunRecord>(line) else {
+                continue;
+            };
+            // Without a job key the row cannot be attributed; without it the
+            // record is unusable, which is malformed for our purposes.
+            if rec.job.trim().is_empty() {
+                continue;
+            }
+            records.push(rec.into_new_run());
+        }
+
+        let mut conn = self.lock();
+        let tx = conn.transaction()?;
+        let mut n = 0usize;
+        for r in &records {
+            upsert_run(&tx, r)?;
+            n += 1;
+        }
+        tx.commit()?;
+        Ok(n)
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
         // A panicked writer must not take the console down with it: the
         // database is derived, so a poisoned lock is recoverable by design.
         self.conn.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// structured feed parsing (logs/runs.jsonl)
+// ---------------------------------------------------------------------------
+
+/// One line of the feed, exactly as `record_run` in lib/common.sh emits it:
+/// `job`, `started_at`, `duration_s`, `rc`, `status`, `dry_run`, `summary`,
+/// `stdout`. Only the two key fields are required so a slightly older or
+/// newer producer still yields a row instead of being dropped wholesale.
+#[derive(serde::Deserialize)]
+struct RunRecord {
+    job: String,
+    started_at: i64,
+    #[serde(default)]
+    duration_s: i64,
+    #[serde(default)]
+    rc: i64,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    dry_run: bool,
+    #[serde(default)]
+    summary: String,
+    #[serde(default)]
+    stdout: String,
+}
+
+impl RunRecord {
+    fn into_new_run(self) -> NewRun {
+        // The feed carries the producer's own derivation; trust it and only
+        // fall back when it is absent or not in the shared vocabulary.
+        let rc = i32::try_from(self.rc).unwrap_or(-1);
+        let status = self
+            .status
+            .as_deref()
+            .map(Status::parse)
+            .filter(|s| *s != Status::None)
+            .unwrap_or_else(|| Status::derive(rc, rc == 124, &self.stdout));
+        NewRun {
+            job: self.job,
+            started_at: self.started_at,
+            duration_s: self.duration_s,
+            rc,
+            status,
+            dry_run: self.dry_run,
+            summary: self.summary,
+            stdout: self.stdout,
+        }
     }
 }
 
@@ -911,6 +1002,120 @@ this line is not a log line at all
         let n = db.ingest_log(&log).unwrap();
         assert_eq!(n, 7);
         assert_eq!(db.runs_for("20-mole-clean.sh", 10).unwrap().len(), 2);
+    }
+
+    /// One line per run, in the exact shape `record_run` in lib/common.sh
+    /// writes (measured from the producer, not inferred from the text log).
+    const SAMPLE_RUNS_JSONL: &str = "\
+{\"job\": \"10-mole-optimize.sh\", \"started_at\": 1700000000, \"duration_s\": 18, \"rc\": 0, \"status\": \"quiet\", \"dry_run\": false, \"summary\": \"\", \"stdout\": \"\"}
+{\"job\": \"30-brew-update.sh\", \"started_at\": 1700000010, \"duration_s\": 12, \"rc\": 0, \"status\": \"spoke\", \"dry_run\": false, \"summary\": \"upgraded=4\", \"stdout\": \"== brew-update ==\\ngitea 28.1.0 -> 28.2.0 (caf\\u00e9)\"}
+{\"job\": \"90-probe-timeout.sh\", \"started_at\": 1700000020, \"duration_s\": 5, \"rc\": 124, \"status\": \"hang\", \"dry_run\": true, \"summary\": \"timed out\", \"stdout\": \"\"}
+{\"job\": \"50-solo.sh\", \"started_at\": 1700000030, \"duration_s\": 5, \"rc\": 3, \"status\": \"fail\", \"dry_run\": false, \"summary\": \"exited 3\", \"stdout\": \"\"}
+";
+
+    #[test]
+    fn ingest_runs_jsonl_reads_the_producer_record() {
+        let t = Tmp::new("jsonl");
+        let runs = t.path("runs.jsonl");
+        std::fs::write(&runs, SAMPLE_RUNS_JSONL).unwrap();
+        let db = t.db();
+
+        assert_eq!(db.ingest_runs_jsonl(&runs).unwrap(), 4);
+        assert_eq!(count(&db), 4);
+
+        // Quiet: the feed's own status wins, no re-derivation from prose.
+        let opt = db.last_run("10-mole-optimize.sh").unwrap().unwrap();
+        assert_eq!(opt.started_at, 1_700_000_000);
+        assert_eq!(opt.duration_s, 18);
+        assert_eq!(opt.rc, 0);
+        assert_eq!(opt.status, Status::Quiet);
+        assert!(!opt.dry_run);
+        assert_eq!(opt.summary, "");
+        assert_eq!(opt.stdout, "");
+
+        // Spoke, with embedded newline and non-ASCII text preserved.
+        let brew = db.last_run("30-brew-update.sh").unwrap().unwrap();
+        assert_eq!(brew.status, Status::Spoke);
+        assert_eq!(brew.summary, "upgraded=4");
+        assert!(brew.stdout.contains("gitea 28.1.0 -> 28.2.0 (café)"));
+
+        // Hang carries dry_run=true and rc=124 straight through.
+        let hang = db.last_run("90-probe-timeout.sh").unwrap().unwrap();
+        assert_eq!(hang.status, Status::Hang);
+        assert_eq!(hang.rc, 124);
+        assert!(hang.dry_run);
+
+        let fail = db.last_run("50-solo.sh").unwrap().unwrap();
+        assert_eq!(fail.status, Status::Fail);
+        assert_eq!(fail.rc, 3);
+    }
+
+    #[test]
+    fn ingest_runs_jsonl_skips_malformed_and_truncated_lines() {
+        let t = Tmp::new("jsonl-bad");
+        let runs = t.path("runs.jsonl");
+        std::fs::write(
+            &runs,
+            "\
+{\"job\": \"10-mole-optimize.sh\", \"started_at\": 1700000000, \"duration_s\": 18, \"rc\": 0, \"status\": \"quiet\", \"dry_run\": false, \"summary\": \"\", \"stdout\": \"\"}
+{ not json at all
+[]
+{\"job\": \"  \", \"started_at\": 1700000040, \"rc\": 0, \"status\": \"quiet\"}
+{\"job\": \"missing-key.sh\", \"duration_s\": 1}
+{\"job\": \"30-brew-update.sh\", \"started_at\": 1700000010, \"duration_s\": 12, \"rc\": 0, \"status\": \"spoke\", \"dry_run\": false, \"summary\": \"upgraded=4\", \"stdout\": \"\"}
+{\"job\": \"40-skills-update.sh\", \"started_at\": 1700",
+        )
+        .unwrap();
+        let db = t.db();
+
+        // The two complete records land; every bad/truncated line is skipped.
+        assert_eq!(db.ingest_runs_jsonl(&runs).unwrap(), 2);
+        assert_eq!(count(&db), 2);
+        assert!(db.last_run("10-mole-optimize.sh").unwrap().is_some());
+        assert!(db.last_run("30-brew-update.sh").unwrap().is_some());
+        // No phantom rows from the truncated tail, the empty job, or the
+        // record with no key.
+        assert!(db.last_run("40-skills-update.sh").unwrap().is_none());
+        assert!(db.last_run("missing-key.sh").unwrap().is_none());
+        assert!(db.last_run("").unwrap().is_none());
+    }
+
+    #[test]
+    fn ingest_runs_jsonl_missing_file_is_a_noop() {
+        let t = Tmp::new("jsonl-missing");
+        let db = t.db();
+        // A missing feed means "nothing to index", never an error.
+        assert_eq!(db.ingest_runs_jsonl(&t.path("nope.jsonl")).unwrap(), 0);
+        assert_eq!(count(&db), 0);
+    }
+
+    #[test]
+    fn ingest_runs_jsonl_is_idempotent_and_updates_in_place() {
+        let t = Tmp::new("jsonl-again");
+        let runs = t.path("runs.jsonl");
+        std::fs::write(&runs, SAMPLE_RUNS_JSONL).unwrap();
+        let db = t.db();
+
+        let n1 = db.ingest_runs_jsonl(&runs).unwrap();
+        assert_eq!(n1, 4);
+        assert_eq!(count(&db), 4);
+        // Re-ingesting the same file must not duplicate anything.
+        assert_eq!(db.ingest_runs_jsonl(&runs).unwrap(), n1);
+        assert_eq!(count(&db), 4);
+
+        // A rewritten record with the same (job, started_at) updates the row
+        // rather than adding one: the keying matches ingest_log's.
+        std::fs::write(
+            &runs,
+            "{\"job\": \"30-brew-update.sh\", \"started_at\": 1700000010, \"duration_s\": 12, \"rc\": 1, \"status\": \"fail\", \"dry_run\": false, \"summary\": \"boom\", \"stdout\": \"\"}\n",
+        )
+        .unwrap();
+        assert_eq!(db.ingest_runs_jsonl(&runs).unwrap(), 1);
+        assert_eq!(count(&db), 4);
+        let brew = db.last_run("30-brew-update.sh").unwrap().unwrap();
+        assert_eq!(brew.rc, 1);
+        assert_eq!(brew.status, Status::Fail);
+        assert_eq!(brew.summary, "boom");
     }
 
     #[test]
