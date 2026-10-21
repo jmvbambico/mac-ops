@@ -56,6 +56,14 @@ export const S = {
     draft: null as string | null,
     saved: null as string | null,
   },
+  /**
+   * Drafts for the text inputs whose value is the user's in-progress typing.
+   * Typing mirrors into this map (see `mirrorDraft`) so an unrelated repaint
+   * — a toast auto-dismissing, a background load — rebuilds the field from
+   * what was typed instead of stale model data. The field still feeds the
+   * same command it always did; only its rendering source changed.
+   */
+  drafts: {} as Record<string, string>,
 
   // navigation
   view: "overview" as ViewName,
@@ -81,6 +89,53 @@ export const S = {
   busy: null as string | null,
   toast: null as Toast | null,
 };
+
+/**
+ * The text inputs whose value is the user's in-progress typing. Typing
+ * mirrors into `S.drafts` instead of being re-read from the model on the
+ * next repaint. This is the same shape as the `#root-input` fix: mirror the
+ * keystroke, and deliberately do NOT repaint — repainting the input being
+ * typed into is exactly what loses the caret and the value.
+ */
+export const DRAFT_INPUT_IDS = [
+  "d-title",
+  "d-newtime",
+  "d-timeout",
+  "d-every",
+  "prune-days",
+  "s-start",
+  "s-end",
+  "s-max",
+] as const;
+
+/** Drafts for the detail view are scoped to the automation being edited. */
+const DETAIL_DRAFT_IDS = new Set<string>(["d-title", "d-newtime", "d-timeout", "d-every"]);
+
+const draftKey = (id: string): string =>
+  DETAIL_DRAFT_IDS.has(id) ? `${S.selected ?? ""}::${id}` : id;
+
+/** The value currently typed into `id`, if the user has typed into it. */
+export function getDraft(id: string): string | undefined {
+  return S.drafts[draftKey(id)];
+}
+
+/** Mirror a keystroke into the draft map. Returns false for other inputs. */
+export function mirrorDraft(id: string, value: string): boolean {
+  if (!DRAFT_INPUT_IDS.includes(id as (typeof DRAFT_INPUT_IDS)[number])) return false;
+  S.drafts[draftKey(id)] = value;
+  return true;
+}
+
+/** Forget a draft — used when the field it belongs to is rebuilt from scratch. */
+export function clearDraft(id: string): void {
+  delete S.drafts[draftKey(id)];
+}
+
+/** Forget the detail-view drafts of one automation (when it is left behind). */
+export function clearDetailDrafts(file: string | null): void {
+  if (!file) return;
+  for (const id of DETAIL_DRAFT_IDS) delete S.drafts[`${file}::${id}`];
+}
 
 type Listener = () => void;
 let listener: Listener = () => {};

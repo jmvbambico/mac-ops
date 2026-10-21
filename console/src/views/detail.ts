@@ -7,7 +7,7 @@ import { IC } from "../icons";
 import { esc, fmtDur, groupsOf, nextRun, scheduleDays, scheduleTimes, untilStr, DAYS, fmtDay } from "../format";
 import { STATUS_META, lastDuration, statusOf } from "../types";
 import type { Run } from "../types";
-import { S, jobByFile, jobs } from "../store";
+import { S, getDraft, jobByFile, jobs } from "../store";
 import { asyncPanel, fatal, inlineErr } from "./common";
 
 /**
@@ -143,7 +143,7 @@ export function vDetail(): string {
         }
         ${
           s.mode === "interval"
-            ? `<div class="row"><input class="inp" type="number" min="1" max="24" value="${s.every_hours}"
+            ? `<div class="row"><input class="inp" type="number" min="1" max="24" value="${getDraft("d-every") ?? s.every_hours}"
                 id="d-every" style="width:70px">
           <span class="muted">hours between runs</span>
           <button class="btn sm" data-setevery>Apply</button></div>`
@@ -159,7 +159,8 @@ export function vDetail(): string {
                   `<span class="pill mono">${esc(t)}<span class="x" data-deltime="${esc(t)}" title="Remove">×</span></span>`,
               )
               .join("")}
-            <input class="inp mono" id="d-newtime" placeholder="HH:MM" style="width:74px">
+            <input class="inp mono" id="d-newtime" placeholder="HH:MM" style="width:74px"
+              value="${esc(getDraft("d-newtime") ?? "")}">
             <button class="btn sm ghost" data-addtime>${IC.plus} Add time</button>
           </div>`
             : ""
@@ -181,14 +182,14 @@ export function vDetail(): string {
       <div class="card pad col" style="gap:11px">
         <div style="font-weight:600;font-size:12.5px">Guard rails</div>
         <div class="field" style="margin:0"><label>Timeout</label>
-          <div class="row"><input class="inp" type="number" min="1" value="${j.timeout}" id="d-timeout"
+          <div class="row"><input class="inp" type="number" min="1" value="${getDraft("d-timeout") ?? j.timeout}" id="d-timeout"
               style="width:92px">
             <span class="muted">seconds</span>
             <button class="btn sm" data-settimeout>Apply</button></div>
           <div class="hint">Written as <span class="mono"># timeout: ${j.timeout}</span> on line 3.
             On expiry the process group is TERM'd, graced 5s, then KILL'd.</div></div>
         <div class="field" style="margin:0"><label>Title</label>
-          <div class="row"><input class="inp" id="d-title" value="${esc(j.title)}" style="flex:1 1 auto;max-width:260px">
+          <div class="row"><input class="inp" id="d-title" value="${esc(getDraft("d-title") ?? j.title)}" style="flex:1 1 auto;max-width:260px">
             <button class="btn sm" data-settitle>Rename</button></div>
           <div class="hint">Display name only, stored in <span class="mono">state/console.json</span>. The
             file on disk keeps its name.</div></div>

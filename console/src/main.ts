@@ -16,7 +16,6 @@ import {
   fmtDur,
   groupsOf,
   hhmm,
-  localLoadProfile,
   parseHHMM,
   staggerPlan,
 } from "./format";
@@ -25,6 +24,8 @@ import {
   S,
   SAVED_VIEWS,
   attnJobs,
+  clearDetailDrafts,
+  clearDraft,
   deleteJob,
   jobByFile,
   jobs,
@@ -33,6 +34,7 @@ import {
   loadLogs,
   loadPaths,
   loadProfile,
+  mirrorDraft,
   mutate,
   onChange,
   primeView,
@@ -55,6 +57,7 @@ import { vJobs } from "./views/jobs";
 import { vLogs } from "./views/logs";
 import { vOverview } from "./views/overview";
 import { vSchedule } from "./views/schedule";
+import { StaggerCtx, vStagger } from "./views/stagger";
 import { vSettings } from "./views/settings";
 
 /* ------------------------------- chrome ------------------------------- */
@@ -292,8 +295,12 @@ function render(): void {
 
 function go(view: ViewName, selected?: string | null): void {
   if (view === "detail" && !(selected ?? S.selected)) view = "jobs";
+  const prev = S.selected;
   S.view = view;
   if (selected !== undefined) S.selected = selected;
+  // Leaving an automation behind drops its half-typed drafts: they belong to
+  // that automation's detail view, not to the next one.
+  if (prev !== S.selected) clearDetailDrafts(prev);
   S.picked.clear();
   primeView();
   render();
@@ -546,19 +553,7 @@ function confirmDeep(file: string): void {
   void confirmRun();
 }
 
-interface StaggerCtx {
-  files: string[];
-  start: number;
-  end: number;
-  max: number;
-  plan: Map<string, number> | null;
-}
-
 let staggerCtx: StaggerCtx | null = null;
-
-function peakConcurrency(): number {
-  return Math.max(0, ...(S.profile.data ?? localLoadProfile(jobs())));
-}
 
 function openStaggerModal(): void {
   const list = S.picked.size ? jobs().filter((j) => S.picked.has(j.file)) : jobs().filter((j) => j.enabled);
@@ -567,6 +562,11 @@ function openStaggerModal(): void {
     return;
   }
   S.palOpen = false;
+  // A fresh modal starts from the defaults, not from a previous session's
+  // half-typed window.
+  clearDraft("s-start");
+  clearDraft("s-end");
+  clearDraft("s-max");
   staggerCtx = { files: list.map((j) => j.file), start: 60, end: 300, max: 2, plan: null };
   renderStaggerModal();
 }
@@ -574,45 +574,7 @@ function openStaggerModal(): void {
 function renderStaggerModal(): void {
   const ctx = staggerCtx;
   if (!ctx) return;
-  const preview = ctx.plan
-    ? [...ctx.plan.entries()]
-        .sort((a, b) => a[1] - b[1])
-        .map(([file, min]) => {
-          const j = jobByFile(file);
-          return `<div class="row" style="padding:5px 0;border-top:.5px solid var(--line-soft)">
-            <span class="mono" style="font-size:11.5px;min-width:46px">${hhmm(min)}</span>
-            <span class="trunc" style="font-size:12px">${esc(j?.title ?? file)}</span>
-            <span class="muted mono" style="margin-left:auto;font-size:11px">${esc(file)}</span>
-          </div>`;
-        })
-        .join("")
-    : `<span class="muted" style="font-size:11.5px">Preview to see the proposed start times.</span>`;
-
-  setLayer(`
-    <div class="scrim" data-close><div class="modal" style="width:min(560px,100%)">
-      <h3>Auto-stagger ${ctx.files.length} automations</h3>
-      <p class="muted" style="margin:4px 0 14px;font-size:12.5px">Spreads start times across a window so no
-        two long jobs overlap. Longest first, so the heavy work lands while the machine is idlest.</p>
-      <div class="grid g2">
-        <div class="field" style="margin:0"><label>Window start</label>
-          <input class="inp" id="s-start" value="${hhmm(ctx.start)}" style="height:30px"></div>
-        <div class="field" style="margin:0"><label>Window end</label>
-          <input class="inp" id="s-end" value="${hhmm(ctx.end)}" style="height:30px"></div>
-      </div>
-      <div class="field"><label>Max concurrent</label>
-        <input class="inp" type="number" id="s-max" min="1" max="20" value="${ctx.max}"
-          style="height:30px;width:80px">
-        <div class="hint">Peak today is ${peakConcurrency()}.</div></div>
-      <div class="card" style="margin-top:11px;overflow:hidden;padding:8px 11px">${preview}</div>
-      <div class="note" style="margin-top:13px"><span style="color:var(--accent);flex:0 0 auto">${IC.check}</span>
-        <div>Rewrites <span class="mono">StartCalendarInterval</span> in each LaunchAgent and the schedule in
-        <span class="mono">state/console.json</span>. Reversible — the previous layout is kept.</div></div>
-      <div class="row" style="margin-top:16px;justify-content:flex-end;gap:7px">
-        <button class="btn" data-close>Cancel</button>
-        <button class="btn" data-stagger-preview>Preview</button>
-        <button class="btn pri" data-stagger-apply ${ctx.plan ? "" : "disabled"}>${IC.stagger} Apply layout</button>
-      </div>
-    </div></div>`);
+  setLayer(vStagger(ctx));
 }
 
 function readStaggerInputs(): boolean {
@@ -1131,6 +1093,13 @@ document.addEventListener("input", (e) => {
     S.palQ = el.value;
     palIndex = 0;
     renderPalette();
+  }
+  if (mirrorDraft(el.id, el.value)) {
+    // Mirror the edit into the draft so an unrelated repaint (a toast
+    // auto-dismiss, a background load) cannot reset what the user is typing.
+    // Deliberately do NOT render() here: repainting the input being typed
+    // into is exactly what loses the caret and the value.
+    return;
   }
   if (el.id === "root-input") {
     // Mirror the edit into the draft so an unrelated repaint (a toast
