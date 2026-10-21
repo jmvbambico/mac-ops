@@ -21,6 +21,13 @@ gates:
     run: "shellcheck bin/run bin/run-job lib/common.sh install.sh examples/jobs/*.sh tests/*.sh tests/fixtures/jobs/*.sh"
     scope: worker
 
+  # Fast and hermetic: the five version surfaces (package.json,
+  # tauri.conf.json, Cargo.toml, both lock files' root entries) must agree.
+  # It touches no network and no package manager, so it is worker-scoped.
+  - name: version-consistency
+    run: "bash tests/version-consistency.sh"
+    scope: worker
+
   - name: rust-check
     run: "cd console/src-tauri && cargo check --message-format=short"
     scope: worker
