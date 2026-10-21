@@ -83,6 +83,9 @@ def cargo_package_name(path):
 
 
 def cargo_package_version(path):
+    # Handles only a literal `version = "..."` under [package]. A manifest
+    # using `version.workspace = true` makes this FAIL rather than silently
+    # return a wrong value, which is the fail-safe direction.
     section = None
     try:
         with open(path, encoding='utf-8') as fh:
@@ -106,13 +109,35 @@ def cargo_lock_version(path, package_name):
             text = fh.read()
     except OSError as exc:
         fail('cannot read %s: %s' % (path, exc))
-    # inspect the [[package]] block for THIS crate, never the first match.
+    # Inspect the [[package]] block for THIS crate AND this kind of package.
+    # The crate name alone is not enough: `console` is also a crates.io crate,
+    # so a dependency could introduce a second block with the same name. A
+    # workspace member / path package has NO `source` key, while every registry
+    # dependency has `source = "registry+..."`; that is the discriminator. We
+    # must NOT select by the Cargo.toml version — detecting a stale lock is one
+    # of the disagreements this gate exists to catch.
+    matches = []
     for block in text.split('[[package]]')[1:]:
+        # A block's keys end at the next section header; the final block runs
+        # to EOF otherwise, so truncate before reading any key.
+        block = block.split('[[', 1)[0]
         name = re.search(r'^name\s*=\s*"([^"]*)"', block, re.MULTILINE)
+        if not name or name.group(1) != package_name:
+            continue
+        if re.search(r'^source\s*=', block, re.MULTILINE):
+            continue
         version = re.search(r'^version\s*=\s*"([^"]*)"', block, re.MULTILINE)
-        if name and version and name.group(1) == package_name:
-            return version.group(1)
-    fail('%s has no [[package]] entry for %s' % (path, package_name))
+        if not version:
+            fail('%s has a source-less [[package]] for %s without a version'
+                 % (path, package_name))
+        matches.append(version.group(1))
+    if not matches:
+        fail('%s has no source-less [[package]] entry for %s'
+             % (path, package_name))
+    if len(matches) > 1:
+        fail('%s has %d source-less [[package]] entries for %s: %s'
+             % (path, len(matches), package_name, ', '.join(matches)))
+    return matches[0]
 
 
 root = sys.argv[1]
