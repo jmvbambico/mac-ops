@@ -131,6 +131,23 @@ export function clearDraft(id: string): void {
   delete S.drafts[draftKey(id)];
 }
 
+/**
+ * Forget a draft by the automation it belongs to.
+ *
+ * The detail drafts are keyed by automation, so an action that ran against
+ * one automation must clear THAT one's draft — never "whatever is selected
+ * now". The selection can move while a write is in flight, and resolving
+ * the key late would erase an unrelated automation's in-progress typing.
+ */
+export function clearDraftFor(file: string | null, id: string): void {
+  if (DETAIL_DRAFT_IDS.has(id)) {
+    if (!file) return;
+    delete S.drafts[`${file}::${id}`];
+    return;
+  }
+  delete S.drafts[id];
+}
+
 /** Forget the detail-view drafts of one automation (when it is left behind). */
 export function clearDetailDrafts(file: string | null): void {
   if (!file) return;
@@ -369,9 +386,16 @@ const positiveInt = (raw: string, fallback: number): number => {
 /**
  * Replace the times of the automation being edited. Resolves false when the
  * schedule could not take the change (wrong mode, or a refused write).
+ *
+ * `file` pins the automation this call acts on. Callers that already know
+ * which automation the user acted on pass it, so a selection change during
+ * the awaited write cannot redirect the edit.
  */
-export async function updateTimes(mutateTimes: (times: string[]) => string[]): Promise<boolean> {
-  const j = jobByFile(S.selected);
+export async function updateTimes(
+  mutateTimes: (times: string[]) => string[],
+  file: string | null = S.selected,
+): Promise<boolean> {
+  const j = jobByFile(file);
   const s = j?.schedule;
   if (!j || !s || (s.mode !== "daily" && s.mode !== "weekly")) return false;
   const times = [...mutateTimes(s.times)];
@@ -388,58 +412,77 @@ export async function updateTimes(mutateTimes: (times: string[]) => string[]): P
  *
  * The #d-newtime draft is dropped only once the schedule write succeeded;
  * a rejected time keeps the user's text so it can be corrected.
+ *
+ * The automation is captured at the start: the write is awaited, and by the
+ * time it resolves the user may be editing a different automation. The
+ * draft that gets cleared is therefore the one of the automation this
+ * action started on.
  */
 export async function addTime(raw: string): Promise<boolean> {
+  const file = S.selected;
   const mins = parseHHMM(raw.trim());
   if (mins === null) {
     toast("Enter a time as HH:MM", "warn");
     return false;
   }
   const t = hhmm(mins);
-  const ok = await updateTimes((times) => (times.includes(t) ? times : [...times, t]));
+  const ok = await updateTimes((times) => (times.includes(t) ? times : [...times, t]), file);
   if (!ok) return false;
-  clearDraft("d-newtime");
+  clearDraftFor(file, "d-newtime");
   changed();
   return true;
 }
 
 /** Apply the interval length. Drops the #d-every draft once it is saved. */
 export async function setEvery(raw: string): Promise<boolean> {
-  const j = jobByFile(S.selected);
+  const file = S.selected;
+  const j = jobByFile(file);
   if (!j) return false;
   const hours = Math.min(24, Math.max(1, positiveInt(raw.trim(), 6)));
   const ok = await setSchedule(j.file, { mode: "interval", every_hours: hours });
   if (!ok) return false;
-  clearDraft("d-every");
+  clearDraftFor(file, "d-every");
   changed();
   return true;
 }
 
 /** Apply the timeout. Drops the #d-timeout draft once it is saved. */
 export async function applyTimeout(raw: string): Promise<boolean> {
-  const j = jobByFile(S.selected);
+  const file = S.selected;
+  const j = jobByFile(file);
   if (!j) return false;
   const secs = Math.min(86400, Math.max(1, positiveInt(raw.trim(), j.timeout)));
   const ok = await setTimeoutSecs(j.file, secs);
   if (!ok) return false;
-  clearDraft("d-timeout");
+  clearDraftFor(file, "d-timeout");
   changed();
   return true;
 }
 
-/** Rename the automation. Drops the #d-title draft once the rename lands. */
+/**
+ * Rename the automation. Drops the #d-title draft once the rename lands.
+ *
+ * A title that differs from the current one only by surrounding whitespace
+ * is already the persisted title: that is a success, and the draft is
+ * dropped so the field stops showing the stray space.
+ */
 export async function applyTitle(raw: string): Promise<boolean> {
-  const j = jobByFile(S.selected);
+  const file = S.selected;
+  const j = jobByFile(file);
   if (!j) return false;
   const title = raw.trim();
   if (!title) {
     toast("Title cannot be empty", "warn");
     return false;
   }
-  if (title === j.title) return true;
+  if (title === j.title) {
+    clearDraftFor(file, "d-title");
+    changed();
+    return true;
+  }
   const ok = await setMeta(j.file, title, null);
   if (!ok) return false;
-  clearDraft("d-title");
+  clearDraftFor(file, "d-title");
   changed();
   return true;
 }

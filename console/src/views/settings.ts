@@ -95,7 +95,7 @@ export function vSettings(): string {
     <div class="row" style="gap:9px;flex-wrap:wrap">
       <button class="btn" data-reindex>${IC.refresh} Reindex from log</button>
       <span class="row" style="gap:6px">
-        <input class="inp" type="number" id="prune-days" value="${getDraft("prune-days") ?? 90}" min="1" style="width:76px">
+        <input class="inp" type="number" id="prune-days" value="${esc(getDraft("prune-days") ?? 90)}" min="1" style="width:76px">
         <span class="muted" style="font-size:11.5px">days kept</span>
         <button class="btn" data-prune>${IC.trash} Prune runs</button>
       </span>

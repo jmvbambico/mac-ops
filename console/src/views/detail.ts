@@ -143,7 +143,7 @@ export function vDetail(): string {
         }
         ${
           s.mode === "interval"
-            ? `<div class="row"><input class="inp" type="number" min="1" max="24" value="${getDraft("d-every") ?? s.every_hours}"
+            ? `<div class="row"><input class="inp" type="number" min="1" max="24" value="${esc(getDraft("d-every") ?? s.every_hours)}"
                 id="d-every" style="width:70px">
           <span class="muted">hours between runs</span>
           <button class="btn sm" data-setevery>Apply</button></div>`
@@ -182,7 +182,7 @@ export function vDetail(): string {
       <div class="card pad col" style="gap:11px">
         <div style="font-weight:600;font-size:12.5px">Guard rails</div>
         <div class="field" style="margin:0"><label>Timeout</label>
-          <div class="row"><input class="inp" type="number" min="1" value="${getDraft("d-timeout") ?? j.timeout}" id="d-timeout"
+          <div class="row"><input class="inp" type="number" min="1" value="${esc(getDraft("d-timeout") ?? j.timeout)}" id="d-timeout"
               style="width:92px">
             <span class="muted">seconds</span>
             <button class="btn sm" data-settimeout>Apply</button></div>

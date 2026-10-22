@@ -49,7 +49,7 @@ export function vStagger(ctx: StaggerCtx): string {
           <input class="inp" id="s-end" value="${esc(getDraft("s-end") ?? hhmm(ctx.end))}" style="height:30px"></div>
       </div>
       <div class="field"><label>Max concurrent</label>
-        <input class="inp" type="number" id="s-max" min="1" max="20" value="${getDraft("s-max") ?? ctx.max}"
+        <input class="inp" type="number" id="s-max" min="1" max="20" value="${esc(getDraft("s-max") ?? ctx.max)}"
           style="height:30px;width:80px">
         <div class="hint">Peak today is ${peakConcurrency()}.</div></div>
       <div class="card" style="margin-top:11px;overflow:hidden;padding:8px 11px">${preview}</div>

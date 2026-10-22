@@ -359,3 +359,120 @@ describe("draft inputs — a committed action", () => {
     expect(html).toContain('id="s-max" min="1" max="20" value="2"');
   });
 });
+
+/**
+ * A committed action is awaited. While it is in flight the user can move to
+ * another automation and start typing there. The action must clear the draft
+ * of the automation it STARTED on — resolving the draft key against the
+ * selection at the time the write lands would erase an unrelated
+ * automation's in-progress typing.
+ */
+describe("draft inputs — a write that lands after the user moved on", () => {
+  beforeEach(() => {
+    setBackend(fakeBackend());
+  });
+
+  /** A backend whose `gate` command waits for the returned release. */
+  const gated = (): { release: () => void } => {
+    const real = fakeBackend();
+    let open: () => void = () => {};
+    const wait = new Promise<void>((res) => {
+      open = res;
+    });
+    setBackend({
+      ...real,
+      setMeta: async (file, title, group) => {
+        await wait;
+        return real.setMeta(file, title, group);
+      },
+      setSchedule: async (file, schedule) => {
+        await wait;
+        return real.setSchedule(file, schedule);
+      },
+      setTimeout: async (file, secs) => {
+        await wait;
+        return real.setTimeout(file, secs);
+      },
+    });
+    return { release: open };
+  };
+
+  it("keeps the other automation's title when a rename lands late", async () => {
+    const { release } = gated();
+    select(DAILY);
+    mirrorDraft("d-title", "Renamed A");
+
+    const pending = applyTitle("Renamed A");
+
+    // The user moves to another automation and types a title there.
+    select(OTHER);
+    mirrorDraft("d-title", "B's own title");
+    release();
+
+    expect(await pending).toBe(true);
+    // B's in-progress typing survived ...
+    expect(getDraft("d-title")).toBe("B's own title");
+    // ... and A's draft is the one that was cleared.
+    expect(S.drafts[`${DAILY}::d-title`]).toBeUndefined();
+  });
+
+  it("keeps the other automation's new time when an add lands late", async () => {
+    const { release } = gated();
+    select(DAILY);
+    mirrorDraft("d-newtime", "03:45");
+
+    const pending = addTime("03:45");
+
+    select(OTHER);
+    mirrorDraft("d-newtime", "09:15");
+    release();
+
+    expect(await pending).toBe(true);
+    expect(getDraft("d-newtime")).toBe("09:15");
+    expect(S.drafts[`${DAILY}::d-newtime`]).toBeUndefined();
+  });
+
+  it("keeps the other automation's interval when an apply lands late", async () => {
+    const { release } = gated();
+    select(INTERVAL);
+    mirrorDraft("d-every", "12");
+
+    const pending = setEvery("12");
+
+    select(OTHER);
+    mirrorDraft("d-every", "18");
+    release();
+
+    expect(await pending).toBe(true);
+    expect(getDraft("d-every")).toBe("18");
+    expect(S.drafts[`${INTERVAL}::d-every`]).toBeUndefined();
+  });
+
+  it("keeps the other automation's timeout when an apply lands late", async () => {
+    const { release } = gated();
+    select(DAILY);
+    mirrorDraft("d-timeout", "1800");
+
+    const pending = applyTimeout("1800");
+
+    select(OTHER);
+    mirrorDraft("d-timeout", "60");
+    release();
+
+    expect(await pending).toBe(true);
+    expect(getDraft("d-timeout")).toBe("60");
+    expect(S.drafts[`${DAILY}::d-timeout`]).toBeUndefined();
+  });
+
+  it("drops the draft when the title only differs by surrounding whitespace", async () => {
+    select(DAILY);
+    // The persisted title is "Restic snapshot"; the user typed a stray space.
+    mirrorDraft("d-title", "Restic snapshot ");
+
+    const ok = await applyTitle("Restic snapshot ");
+
+    expect(ok).toBe(true);
+    expect(getDraft("d-title")).toBeUndefined();
+    expect(vDetail()).toContain('id="d-title" value="Restic snapshot"');
+  });
+});
