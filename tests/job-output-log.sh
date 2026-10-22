@@ -10,7 +10,9 @@
 #   2. MOPS_JOB_OUT_CAP cuts the output and leaves a marker in the file.
 #   3. bin/run-job truncates the file at run start, so a second run does not
 #      append to the first run's output, and derives the path from the
-#      FILENAME (a trailing .sh stripped).
+#      FILENAME (a trailing .sh stripped) via the shared helper.
+#   4. bin/run's sweep gives each job its own file (no cross-job leak) and a
+#      second sweep truncates rather than appends.
 #
 # Hermetic: HOME and MOPS_AUTOMATIONS_ROOT point into a mktemp -d that a trap
 # removes, so the real ~/.mops is never read or written. Run standalone or via
@@ -92,7 +94,28 @@ PROBE
 APPEND_FILE="$WORK/append.out.log"
 run_probe "$APPEND_PROBE" "$WORK/append.out" "$WORK/append.err" "MOPS_JOB_OUT=$APPEND_FILE"
 (( PROBE_RC == 0 )) || fail "repeated log_output calls aborted the caller"
-[[ "$(cat "$APPEND_FILE")" == "firstsecond" ]] || fail "log_output did not append across calls"
+[[ "$(cat "$APPEND_FILE")" == $'first\nsecond' ]] \
+    || fail "log_output did not append newline-separated lines across calls"
+
+# Every call ends with exactly one newline: text already ending in one must
+# not gain a second, so the file stays one line per call.
+NL_PROBE="$WORK/newline.sh"
+cat > "$NL_PROBE" <<'PROBE'
+set -u
+source "$1/lib/common.sh"
+log_output "first"
+log_output "second"
+third="third"
+third="$third"$'\n'
+log_output "$third"
+exit 0
+PROBE
+NL_FILE="$WORK/newline.out.log"
+printf 'first\nsecond\nthird\n' > "$WORK/newline.expected"
+run_probe "$NL_PROBE" "$WORK/newline.out" "$WORK/newline.err" "MOPS_JOB_OUT=$NL_FILE"
+(( PROBE_RC == 0 )) || fail "log_output with a trailing-newline text aborted the caller"
+cmp -s "$NL_FILE" "$WORK/newline.expected" \
+    || fail "log_output did not separate calls with exactly one newline"
 
 # ---------------------------------------------------------------------------
 # 1b. With MOPS_JOB_OUT unset, log_output is a silent no-op and creates
@@ -165,6 +188,16 @@ JOB
 chmod +x "$JOB"
 
 EXPECTED="$ROOT/logs/job-10-out.out.log"
+
+# The shell helper is the one path rule bin/run-job calls; the file it
+# actually created must match what the helper says for the same filename.
+# shellcheck disable=SC2016 # $1/$2/$3 are the child shell's positional args
+HELPER_PATH="$(env HOME="$HOME_DIR" MOPS_AUTOMATIONS_ROOT="$ROOT" \
+    bash -c 'source "$1/lib/common.sh"; mops_job_out_path "$2" "$3"' \
+    _ "$TOOL_ROOT" "$ROOT/logs" "10-out.sh")"
+[[ "$HELPER_PATH" == "$EXPECTED" ]] \
+    || fail "mops_job_out_path and bin/run-job disagree: $HELPER_PATH vs $EXPECTED"
+
 JOB_OUT="$WORK/job.out"
 JOB_ERR="$WORK/job.err"
 RUN_JOB_RC=0
@@ -203,4 +236,70 @@ if grep -q -F 'marker=first' "$EXPECTED"; then
     fail "bin/run-job did not truncate the per-job log at run start"
 fi
 
-printf 'job-output-log: ok — log_output is silent and appends, the cap is marked, and run-job truncates job-<slug>.out.log.\n'
+# ---------------------------------------------------------------------------
+# 4. The scheduled sweep (bin/run) gives EACH job its own file, and a second
+#    sweep truncates rather than appends.
+# ---------------------------------------------------------------------------
+SWEEP_ROOT="$WORK/sweep"
+mkdir -p "$SWEEP_ROOT/jobs"
+for spec in "10-alpha:alpha" "20-beta:beta"; do
+    name="${spec%%:*}"
+    word="${spec##*:}"
+    cat > "$SWEEP_ROOT/jobs/$name.sh" <<JOB
+#!/usr/bin/env bash
+# tier: daily
+source "\$MOPS_TOOL_ROOT/lib/common.sh"
+log_output "$word=\${MOPS_TEST_MARKER:-none}"
+exit 0
+JOB
+    chmod +x "$SWEEP_ROOT/jobs/$name.sh"
+done
+
+SWEEP_OUT="$WORK/sweep.out"
+SWEEP_ERR="$WORK/sweep.err"
+SWEEP_RC=0
+run_sweep() {
+    local marker="$1"
+    SWEEP_RC=0
+    env MOPS_TOOL_ROOT="$TOOL_ROOT" \
+        MOPS_AUTOMATIONS_ROOT="$SWEEP_ROOT" \
+        HOME="$HOME_DIR" \
+        MOPS_TEST_MARKER="$marker" \
+        bash "$TOOL_ROOT/bin/run" daily --dry-run \
+        >"$SWEEP_OUT" 2>"$SWEEP_ERR" || SWEEP_RC=$?
+}
+
+ALPHA_OUT="$SWEEP_ROOT/logs/job-10-alpha.out.log"
+BETA_OUT="$SWEEP_ROOT/logs/job-20-beta.out.log"
+
+run_sweep one
+(( SWEEP_RC == 0 )) || {
+    cat "$SWEEP_ERR" >&2
+    fail "bin/run exited $SWEEP_RC on the first sweep"
+}
+if [[ -s "$SWEEP_OUT" ]]; then
+    fail "bin/run's nominal sweep wrote to stdout"
+fi
+[[ -f "$ALPHA_OUT" ]] || fail "the sweep wrote no per-job log for 10-alpha"
+[[ -f "$BETA_OUT" ]] || fail "the sweep wrote no per-job log for 20-beta"
+grep -q -F 'alpha=one' "$ALPHA_OUT" || fail "10-alpha's log lacks its own output"
+grep -q -F 'beta=one' "$BETA_OUT" || fail "20-beta's log lacks its own output"
+if grep -q -F 'beta=' "$ALPHA_OUT" || grep -q -F 'alpha=' "$BETA_OUT"; then
+    fail "the sweep leaked one job's output into another job's file"
+fi
+
+run_sweep two
+(( SWEEP_RC == 0 )) || {
+    cat "$SWEEP_ERR" >&2
+    fail "bin/run exited $SWEEP_RC on the second sweep"
+}
+if [[ -s "$SWEEP_OUT" ]]; then
+    fail "bin/run's second nominal sweep wrote to stdout"
+fi
+grep -q -F 'alpha=two' "$ALPHA_OUT" || fail "the second sweep did not write 10-alpha's output"
+grep -q -F 'beta=two' "$BETA_OUT" || fail "the second sweep did not write 20-beta's output"
+if grep -q -F '=one' "$ALPHA_OUT" || grep -q -F '=one' "$BETA_OUT"; then
+    fail "the second sweep appended to the first sweep's output instead of truncating"
+fi
+
+printf 'job-output-log: ok — log_output is silent, newline-separated and capped; run-job and run both truncate job-<slug>.out.log per run.\n'

@@ -243,6 +243,13 @@ for job in "$JOBS_DIR"/*.sh; do
     err_file="$SCRATCH/err-$JOB_COUNT.txt"
     : > "$out_file"
     : > "$err_file"
+    # Per-job output log, via the same path rule bin/run-job uses. Truncate
+    # HERE, inside the loop after the skips above: a sweep runs many jobs, so
+    # each one that actually runs gets its own fresh file, and a job this
+    # tier skipped keeps the output of its last real run. Best-effort.
+    JOB_OUT_FILE="$(mops_job_out_path "$LOG_DIR" "$job_name")"
+    export MOPS_JOB_OUT="$JOB_OUT_FILE"
+    : > "$MOPS_JOB_OUT" 2>/dev/null || true
 
     # Per-job timeout override is OPTIONAL on line 3 ("# timeout: <secs>").
     # Unlike the tier line, a missing or malformed line 3 is NOT an alert —

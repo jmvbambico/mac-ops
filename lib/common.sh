@@ -132,6 +132,18 @@ log_line() {
     printf '%s %s\n' "$(ts)" "$*" >> "$MOPS_LOG" 2>/dev/null || true
 }
 
+# mops_job_out_path <log_dir> <job_name> — the one shell definition of the
+# per-job output log path. bin/run and bin/run-job both call it, so a job
+# launched on demand and one launched by the scheduled sweep land on the same
+# file. Derived from the FILENAME (unique by construction), never the job's
+# LABEL, which is author-chosen and not unique. The console has the matching
+# rule in Rust; keep the two in step.
+mops_job_out_path() {
+    local log_dir="${1:-}" job_name="${2:-}"
+    [[ -n "$log_dir" && -n "$job_name" ]] || return 1
+    printf '%s\n' "$log_dir/job-${job_name%.sh}.out.log"
+}
+
 # Cap for the per-job output log. This is scratch detail, not the durable
 # record (logs/machine-ops.log is), so a pathological job must not be able to
 # fill the disk. The cap is checked across calls: however many times a job
@@ -158,7 +170,15 @@ log_output() {
 
     local text text_bytes cur room marker budget
     text="$(printf '%s' "$*" | strip_ansi 2>/dev/null || true)"
+    # End every call with exactly one newline. A caller using command
+    # substitution ("out=$(mole clean)") has its trailing newline stripped,
+    # so without this two calls would run their last and first lines
+    # together. Strip any the caller did supply first, so we never double it.
+    while [[ "$text" == *$'\n' ]]; do
+        text="${text%$'\n'}"
+    done
     [[ -n "$text" ]] || return 0
+    text="$text"$'\n'
 
     cur="$(wc -c < "$MOPS_JOB_OUT" 2>/dev/null | tr -d '[:space:]' || true)"
     [[ "$cur" =~ ^[0-9]+$ ]] || cur=0

@@ -92,10 +92,11 @@ fi
 job_name="$(basename "$job_file")"
 job_label="${job_name%.sh}"
 
-# Per-job output log. Key it on the FILENAME (unique by construction), never
-# on the job's LABEL: labels are author-chosen and not unique, so two jobs
-# sharing one would attribute output to each other.
-JOB_OUT_FILE="$LOG_DIR/job-${job_name%.sh}.out.log"
+# Per-job output log, via the one shell path rule in lib/common.sh. Keyed on
+# the FILENAME (unique by construction), never the job's LABEL: labels are
+# author-chosen and not unique, so two jobs sharing one would attribute
+# output to each other.
+JOB_OUT_FILE="$(mops_job_out_path "$LOG_DIR" "$job_name")"
 export MOPS_JOB_OUT="$JOB_OUT_FILE"
 
 if ! mkdir -p "$LOG_DIR" 2>/dev/null; then
