@@ -92,49 +92,11 @@ Canonical names:
 | `MOPS_RUNS` | where structured run records are appended |
 | `MOPS_RUN_STDOUT_CAP` | cap on captured stdout recorded per run |
 
-**Deprecated:** the old `MACHINE_OPS_*` names still work. They are kept until
-the owner's automations in `~/projects/machine-ops` are migrated — that
-condition, not a release number, decides when the alias can go. `0.5.0` is
-only a non-binding estimate. During the transition `bin/run` and `bin/run-job`
-export BOTH names with identical values, so a job that reads the legacy name
-behaves exactly as it did. Reads prefer `MOPS_*` when both are set. The alias
-exists for the owner's own automations, which live in a separate repository
-this codebase cannot reach — not for third-party users.
-
-**Before the legacy names can go.** The deprecation note `warn_legacy_dry_run`
-logs in this repo is not a reliable migration signal for those automations.
-They source their **own copy** of `lib/common.sh`
-(`source "$SCRIPT_DIR/../lib/common.sh"`), not the library shipped here, so
-the note never fires for them. Absence of warnings is not evidence that the
-legacy names are unused. The detector is also lexical and non-exhaustive — it
-misses reads such as `printenv MACHINE_OPS_DRY_RUN` or
-`os.environ["MACHINE_OPS_DRY_RUN"]` — so a clean log proves nothing.
-
-A complete migration touches **both** files in that repository:
-
-- `jobs/*.sh` — four reads of `${MACHINE_OPS_DRY_RUN:-0}`, one per job.
-- `lib/common.sh` — four `MACHINE_OPS_LOG` references (lines 31, 33, 34, 46).
-
-Migrating only `jobs/*.sh` is incomplete. Their `lib/common.sh:31` sets
-`MACHINE_OPS_LOG` unconditionally at source time, anchored on the file's own
-path, so with the runner's export gone it takes that fallback and the run log
-**silently relocates** from the automations root to
-`~/projects/machine-ops/logs/machine-ops.log`. The console reads the
-automations root, so it then shows **empty history with nothing explaining
-why**. Nothing crashes and nothing is destroyed; it is silently wrong, which
-is harder to notice and exactly why `lib/common.sh` must be part of the
-migration. The two files look alike but resolve the log differently: ours goes
-through the automations root and needs `HOME`, theirs anchors on its own path.
-
-Those jobs also read `MACHINE_OPS_FORCE_OFFLINE` (twice), `_SKILL_LOCK`,
-`_NPX` and `_BREW`. These are test seams, not exported by the runner, so they
-are not urgent — but a migration that touches only `DRY_RUN`/`LOG` leaves
-mixed prefixes in one file. Whoever migrates should choose deliberately
-between "runner-exported variables only" and "all of them" and say which.
-
-Before dropping the alias, run all four live jobs under `--dry-run` and
-confirm each one still observes `DRY=1`. Do that verification first; nothing
-may run in apply mode until it passes.
+**Upgrading from the legacy names:** `MOPS_*` is the only accepted spelling.
+The old `MACHINE_OPS_*` aliases were removed, and the runner no longer exports
+them, so a job that still reads `MACHINE_OPS_DRY_RUN` will not see the flag
+(even under `--dry-run`). Rename every `MACHINE_OPS_*` reference in your jobs
+to `MOPS_*` before upgrading.
 
 `install.sh` resolves the automations root when it renders the LaunchAgent and
 pins it in the plist, so launchd and `bin/run` always agree.
@@ -151,7 +113,7 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # The tool root is exported by bin/run/bin/run-job; the fallback supports a
 # checkout used in place (jobs/ beside lib/).
-MACOPS_LIB="${MOPS_TOOL_ROOT:-${MACHINE_OPS_TOOL_ROOT:-$SCRIPT_DIR/..}}/lib"
+MACOPS_LIB="${MOPS_TOOL_ROOT:-$SCRIPT_DIR/..}/lib"
 source "$MACOPS_LIB/common.sh"
 LABEL="my-thing"
 
