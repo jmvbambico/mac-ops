@@ -1728,6 +1728,141 @@ mod tests {
         assert!(logged.lines().count() >= 10, "run log:\n{logged}");
     }
 
+    /// The contract the console advertises: a generated job writes its captured
+    /// command output to `$MOPS_JOB_OUT`. Every other execution test runs with
+    /// that variable ABSENT, so `log_output` hits its early `return 0` and the
+    /// write is never exercised. The dangerous case is a variable that is in
+    /// scope but EMPTY when `log_output` is called — `log_output ""` succeeds
+    /// silently, every silence test still passes, and the file is empty in
+    /// production. That is exactly the "I ran it and saw no output" symptom, so
+    /// this test runs each kind with the variable set and a speaking stub.
+    ///
+    /// NOTE: `log_output` arrives in `lib/common.sh` with the runner half of
+    /// this feature. Until that lands, this fails with `log_output: command
+    /// not found` — for the right reason, and by design. Do not stub it.
+    #[test]
+    fn generated_jobs_write_captured_output_to_mops_job_out() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let common = repo.join("lib/common.sh");
+        if !common.is_file() {
+            return; // nothing to execute against
+        }
+        let t = Tmp::new("job-out");
+        std::fs::create_dir_all(t.root().join("lib")).unwrap();
+        std::fs::create_dir_all(t.root().join("tools")).unwrap();
+        std::fs::copy(&common, t.root().join("lib/common.sh")).unwrap();
+        std::fs::write(t.root().join("tools/noop.py"), "print()\n").unwrap();
+
+        // A distinctive string the stubbed tool emits; the file must carry it,
+        // not merely be non-empty.
+        const MARKER: &str = "MOPS-CAPTURED-OUTPUT-MARKER";
+
+        let stub = t.root().join("stub");
+        std::fs::write(
+            &stub,
+            format!("#!/usr/bin/env bash\nprintf '%s\\n' '{MARKER}'\nexit 0\n"),
+        )
+        .unwrap();
+        make_executable(&stub).unwrap();
+
+        // The reachability probe must answer "online" without the network:
+        // a fake `nc` on PATH makes is_online return true.
+        let bindir = t.root().join("bin");
+        std::fs::create_dir_all(&bindir).unwrap();
+        let nc = bindir.join("nc");
+        std::fs::write(&nc, "#!/usr/bin/env bash\nexit 0\n").unwrap();
+        make_executable(&nc).unwrap();
+        let path_env = format!(
+            "{}:{}",
+            bindir.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+
+        // py only reaches its captured run when a usable venv already exists,
+        // so the venv interpreter is a stub that speaks the marker too.
+        let venv_dir = t.root().join("venv");
+        std::fs::create_dir_all(venv_dir.join("bin")).unwrap();
+        let venv_py = venv_dir.join("bin/python3");
+        std::fs::write(
+            &venv_py,
+            format!("#!/usr/bin/env bash\nprintf '%s\\n' '{MARKER}'\nexit 0\n"),
+        )
+        .unwrap();
+        make_executable(&venv_py).unwrap();
+
+        let mut mole = spec("mole", "Mole Optimize");
+        mole.subcommand = Some("optimize".into());
+        let mut pkg = spec("pkg", "Npm Updates");
+        pkg.manager = Some("npm".into());
+        let mut py = spec("py", "Report Generator");
+        py.script_path = Some("tools/noop.py".into());
+        let cases: Vec<NewJob> = vec![mole, pkg, py, spec("sh", "Blank Scaffold")];
+
+        for s in cases {
+            let file = create(t.root(), &s).unwrap();
+            let job = t.jobs().join(&file);
+            let outfile = t
+                .root()
+                .join(format!("{}.out.log", file.trim_end_matches(".sh")));
+            let log = t.root().join("run.log");
+
+            let mut cmd = Command::new("/bin/bash");
+            cmd.arg(&job)
+                .env("MOPS_LOG", &log)
+                .env("MOPS_JOB_OUT", &outfile)
+                .env("PATH", &path_env)
+                .env("MOPS_MOLE", &stub)
+                .env("MOPS_PKG_BIN", &stub)
+                .env("MOPS_PYTHON", &stub)
+                .env("MOPS_VENV_DIR", &venv_dir)
+                .env_remove("MOPS_TOOL_ROOT")
+                .env_remove("MOPS_AUTOMATIONS_ROOT")
+                .env_remove("MOPS_FORCE_OFFLINE")
+                .stdin(Stdio::null());
+            if s.kind == "py" {
+                // A real run: the venv already exists, so no network or install.
+                cmd.env_remove("MOPS_DRY_RUN");
+            } else {
+                cmd.env("MOPS_DRY_RUN", "1");
+            }
+
+            let out = cmd.output().unwrap();
+            let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+            assert_eq!(
+                out.status.code(),
+                Some(0),
+                "{file} ({}) must exit 0; stderr:\n{stderr}",
+                s.kind
+            );
+            // The important half: enabling the output file must not make a
+            // nominal run speak. Principle I still holds with MOPS_JOB_OUT set.
+            assert!(
+                out.stdout.is_empty(),
+                "{file} ({}) spoke on stdout with MOPS_JOB_OUT set; stdout:\n{}",
+                s.kind,
+                String::from_utf8_lossy(&out.stdout)
+            );
+
+            let wrote = std::fs::read_to_string(&outfile).unwrap_or_default();
+            if s.kind == "sh" {
+                // The scaffold's work functions are silent stubs by design:
+                // they log_line and never print, so there is genuinely no
+                // captured output. Assert that honest empty rather than
+                // loosening the other three.
+                assert!(
+                    wrote.trim().is_empty(),
+                    "{file} scaffold must not invent captured output; file:\n{wrote}"
+                );
+            } else {
+                assert!(
+                    wrote.contains(MARKER),
+                    "{file} ({}) did not write the stubbed output to MOPS_JOB_OUT; file={wrote:?}; stderr:\n{stderr}",
+                    s.kind
+                );
+            }
+        }
+    }
+
     /// Apply mode, end to end, against a stub manager: a successful upgrade
     /// must stay silent and leave the counts in the run log, while a failing
     /// one must speak exactly once.
