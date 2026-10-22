@@ -23,9 +23,12 @@ import { IC } from "./icons";
 import {
   S,
   SAVED_VIEWS,
+  addTime,
+  applyTimeout,
+  applyTitle,
   attnJobs,
   clearDetailDrafts,
-  clearDraft,
+  clearStaggerDrafts,
   deleteJob,
   jobByFile,
   jobs,
@@ -38,13 +41,15 @@ import {
   mutate,
   onChange,
   primeView,
+  pruneRuns,
   refreshJobs,
   saveAutomationsRoot,
   setEnabled,
+  setEvery,
   setMeta,
   setSchedule,
-  setTimeoutSecs,
   toast,
+  updateTimes,
   validate,
   visible,
 } from "./store";
@@ -564,9 +569,7 @@ function openStaggerModal(): void {
   S.palOpen = false;
   // A fresh modal starts from the defaults, not from a previous session's
   // half-typed window.
-  clearDraft("s-start");
-  clearDraft("s-end");
-  clearDraft("s-max");
+  clearStaggerDrafts();
   staggerCtx = { files: list.map((j) => j.file), start: 60, end: 300, max: 2, plan: null };
   renderStaggerModal();
 }
@@ -791,54 +794,8 @@ function toggleDay(day: string): void {
   void setSchedule(j.file, { mode: "weekly", days, times: s.times });
 }
 
-function updateTimes(mutateTimes: (times: string[]) => string[]): void {
-  const j = currentJob();
-  const s = j?.schedule;
-  if (!j || !s || (s.mode !== "daily" && s.mode !== "weekly")) return;
-  const times = mutateTimes(s.times);
-  if (!times.length) {
-    toast("A schedule needs at least one time", "warn");
-    return;
-  }
-  times.sort((a, b) => (parseHHMM(a) ?? 0) - (parseHHMM(b) ?? 0));
-  void setSchedule(j.file, s.mode === "weekly" ? { mode: "weekly", days: s.days, times } : { mode: "daily", times });
-}
-
-function addTime(): void {
-  const raw = inputValue("#d-newtime").trim();
-  const mins = parseHHMM(raw);
-  if (mins === null) {
-    toast("Enter a time as HH:MM", "warn");
-    return;
-  }
-  const t = hhmm(mins);
-  updateTimes((times) => (times.includes(t) ? times : [...times, t]));
-}
-
-function setEvery(): void {
-  const j = currentJob();
-  if (!j) return;
-  const hours = Math.min(24, Math.max(1, numberValue("#d-every", 6)));
-  void setSchedule(j.file, { mode: "interval", every_hours: hours });
-}
-
-function applyTimeout(): void {
-  const j = currentJob();
-  if (!j) return;
-  const secs = Math.min(86400, Math.max(1, numberValue("#d-timeout", j.timeout)));
-  void setTimeoutSecs(j.file, secs);
-}
-
-function applyTitle(): void {
-  const j = currentJob();
-  if (!j) return;
-  const title = inputValue("#d-title").trim();
-  if (!title) {
-    toast("Title cannot be empty", "warn");
-    return;
-  }
-  if (title !== j.title) void setMeta(j.file, title, null);
-}
+// The actions themselves live in store.ts: they own the draft handling —
+// an input's draft is dropped only when the command it feeds succeeded.
 
 /* -------------------------------- events -------------------------------- */
 
@@ -982,23 +939,23 @@ document.addEventListener("click", (e) => {
     return;
   }
   if (d.setevery !== undefined) {
-    setEvery();
+    void setEvery(inputValue("#d-every"));
     return;
   }
   if (d.addtime !== undefined) {
-    addTime();
+    void addTime(inputValue("#d-newtime"));
     return;
   }
   if (d.deltime) {
-    updateTimes((times) => times.filter((x) => x !== d.deltime));
+    void updateTimes((times) => times.filter((x) => x !== d.deltime));
     return;
   }
   if (d.settimeout !== undefined) {
-    applyTimeout();
+    void applyTimeout(inputValue("#d-timeout"));
     return;
   }
   if (d.settitle !== undefined) {
-    applyTitle();
+    void applyTitle(inputValue("#d-title"));
     return;
   }
   if (d.validate) {
@@ -1028,8 +985,7 @@ document.addEventListener("click", (e) => {
     return;
   }
   if (d.prune !== undefined) {
-    const days = numberValue("#prune-days", 90);
-    void mutate(`Pruned runs older than ${days} days`, () => backend().pruneRuns(days));
+    void pruneRuns(inputValue("#prune-days"));
     return;
   }
   if (d.setRoot !== undefined) {

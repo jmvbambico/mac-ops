@@ -11,7 +11,7 @@
 import { backend, errText } from "./api";
 import type { ResolvedPathsInfo } from "./api";
 import type { DayStat, Job, Run, Schedule, Status } from "./types";
-import { localLoadProfile, needsAttention, nextRun } from "./format";
+import { hhmm, localLoadProfile, needsAttention, nextRun, parseHHMM } from "./format";
 import { lastDuration, statusOf } from "./types";
 
 export type ViewName = "overview" | "jobs" | "schedule" | "logs" | "settings" | "detail";
@@ -135,6 +135,16 @@ export function clearDraft(id: string): void {
 export function clearDetailDrafts(file: string | null): void {
   if (!file) return;
   for (const id of DETAIL_DRAFT_IDS) delete S.drafts[`${file}::${id}`];
+}
+
+/**
+ * Forget the stagger window drafts. A modal opened afresh starts from the
+ * defaults, not from a previous session's half-typed window.
+ */
+export function clearStaggerDrafts(): void {
+  clearDraft("s-start");
+  clearDraft("s-end");
+  clearDraft("s-max");
 }
 
 type Listener = () => void;
@@ -332,3 +342,118 @@ export const setMeta = (file: string, title: string | null, group: string | null
 
 export const deleteJob = (file: string, keepScript: boolean): Promise<boolean> =>
   mutate(`Deleted ${file}`, () => backend().deleteJob(file, keepScript));
+
+/* --------------------- actions that consume a draft --------------------- */
+
+/**
+ * The actions behind the buttons that read one of the draft inputs.
+ *
+ * Each one takes the value the user typed, runs the real command, and drops
+ * that input's draft ONLY when the command succeeded.
+ *
+ * The rule matters in both directions. Before the drafts existed, the field
+ * was rebuilt from the model on every repaint, so a committed action left it
+ * empty and a failed one silently ate the text. Persisting the draft fixed
+ * the second half, but it also stopped the first: a successful "Add time"
+ * must still leave the box empty, or the next click adds the same time
+ * twice. A rejected value — unparsable, or a write the backend refused —
+ * must keep its text so the user can correct it.
+ */
+
+/** A number input's value as a positive integer, or the fallback. */
+const positiveInt = (raw: string, fallback: number): number => {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+};
+
+/**
+ * Replace the times of the automation being edited. Resolves false when the
+ * schedule could not take the change (wrong mode, or a refused write).
+ */
+export async function updateTimes(mutateTimes: (times: string[]) => string[]): Promise<boolean> {
+  const j = jobByFile(S.selected);
+  const s = j?.schedule;
+  if (!j || !s || (s.mode !== "daily" && s.mode !== "weekly")) return false;
+  const times = [...mutateTimes(s.times)];
+  if (!times.length) {
+    toast("A schedule needs at least one time", "warn");
+    return false;
+  }
+  times.sort((a, b) => (parseHHMM(a) ?? 0) - (parseHHMM(b) ?? 0));
+  return setSchedule(j.file, s.mode === "weekly" ? { mode: "weekly", days: s.days, times } : { mode: "daily", times });
+}
+
+/**
+ * Add a time to the automation being edited.
+ *
+ * The #d-newtime draft is dropped only once the schedule write succeeded;
+ * a rejected time keeps the user's text so it can be corrected.
+ */
+export async function addTime(raw: string): Promise<boolean> {
+  const mins = parseHHMM(raw.trim());
+  if (mins === null) {
+    toast("Enter a time as HH:MM", "warn");
+    return false;
+  }
+  const t = hhmm(mins);
+  const ok = await updateTimes((times) => (times.includes(t) ? times : [...times, t]));
+  if (!ok) return false;
+  clearDraft("d-newtime");
+  changed();
+  return true;
+}
+
+/** Apply the interval length. Drops the #d-every draft once it is saved. */
+export async function setEvery(raw: string): Promise<boolean> {
+  const j = jobByFile(S.selected);
+  if (!j) return false;
+  const hours = Math.min(24, Math.max(1, positiveInt(raw.trim(), 6)));
+  const ok = await setSchedule(j.file, { mode: "interval", every_hours: hours });
+  if (!ok) return false;
+  clearDraft("d-every");
+  changed();
+  return true;
+}
+
+/** Apply the timeout. Drops the #d-timeout draft once it is saved. */
+export async function applyTimeout(raw: string): Promise<boolean> {
+  const j = jobByFile(S.selected);
+  if (!j) return false;
+  const secs = Math.min(86400, Math.max(1, positiveInt(raw.trim(), j.timeout)));
+  const ok = await setTimeoutSecs(j.file, secs);
+  if (!ok) return false;
+  clearDraft("d-timeout");
+  changed();
+  return true;
+}
+
+/** Rename the automation. Drops the #d-title draft once the rename lands. */
+export async function applyTitle(raw: string): Promise<boolean> {
+  const j = jobByFile(S.selected);
+  if (!j) return false;
+  const title = raw.trim();
+  if (!title) {
+    toast("Title cannot be empty", "warn");
+    return false;
+  }
+  if (title === j.title) return true;
+  const ok = await setMeta(j.file, title, null);
+  if (!ok) return false;
+  clearDraft("d-title");
+  changed();
+  return true;
+}
+
+/**
+ * Prune the run database. Drops the #prune-days draft once the prune ran —
+ * the window has been spent, and the field falls back to the default, which
+ * is what the field showed before the drafts existed.
+ */
+export async function pruneRuns(raw: string): Promise<boolean> {
+  const days = positiveInt(raw.trim(), 90);
+  const ok = await mutate(`Pruned runs older than ${days} days`, () => backend().pruneRuns(days));
+  if (!ok) return false;
+  clearDraft("prune-days");
+  changed();
+  return true;
+}
