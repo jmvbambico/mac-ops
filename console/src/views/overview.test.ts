@@ -26,6 +26,7 @@ beforeEach(async () => {
   fleet = await loadFleet();
   S.jobs = { data: null, error: null, loading: false };
   S.fleet = { data: null, error: null, loading: false };
+  S.paths = { data: null, error: null, loading: false };
   S.groupFilter = null;
   S.q = "";
   S.statusF = new Set();
@@ -110,6 +111,42 @@ describe("vOverview — escaping", () => {
     expect(html).not.toContain("<script>");
     expect(html).not.toContain('alert("x")');
     expect(html).toContain("&lt;script&gt;");
+  });
+});
+
+describe("vOverview — empty state", () => {
+  const empty = (): void => {
+    S.jobs = { data: [], error: null, loading: false };
+    S.fleet = { data: [], error: null, loading: false };
+  };
+
+  it("shows the resolved automations root once paths are loaded", () => {
+    empty();
+    S.paths = {
+      data: {
+        tool_root: "/opt/mac-ops/tool",
+        automations_root: "/Users/me/Automations",
+        config_path: "/Users/me/.config/mops/config.json",
+        source: "config",
+      },
+      error: null,
+      loading: false,
+    };
+
+    const html = vOverview();
+
+    expect(html).toContain("No automations on disk");
+    expect(html).toContain("/Users/me/Automations");
+    expect(html).toContain("changeable in Settings");
+    expect(html).not.toContain("~/.mops by default");
+    // Principle II: the tool's install root is not the automations root.
+    expect(html).not.toContain("/opt/mac-ops/tool");
+  });
+
+  it("falls back to the default wording before paths are known", () => {
+    empty();
+    const html = vOverview();
+    expect(html).toContain("~/.mops</span> by default, changeable in Settings");
   });
 });
 

@@ -9,6 +9,7 @@
  */
 import { backend, errText, setBackend } from "./api";
 import type { Unsubscribe } from "./api";
+import { applyBulk, bulkEnabledToast, bulkRunToast, planBulk } from "./bulk";
 import { closeLayer, inputValue, numberValue, setLayer, $ } from "./dom";
 import { fakeBackend } from "./fake";
 import {
@@ -788,40 +789,43 @@ function toggleTheme(): void {
 }
 
 async function bulkSetEnabled(files: string[], enabled: boolean): Promise<void> {
-  if (!files.length) {
-    toast("Select automations first", "warn");
+  const check = planBulk(files);
+  if (!check.ok) {
+    toast(check.reason, "warn");
     return;
   }
+  const list = check.files;
+  const what = `${enabled ? "Enabled" : "Disabled"} ${list.length} automation${list.length === 1 ? "" : "s"}`;
   S.picked.clear();
-  await mutate(
-    `${enabled ? "Enabled" : "Disabled"} ${files.length} automation${files.length === 1 ? "" : "s"}`,
-    () => Promise.all(files.map((f) => backend().setEnabled(f, enabled))),
-  );
+  S.busy = what;
+  render();
+  try {
+    const result = await applyBulk(list, (file) => backend().setEnabled(file, enabled));
+    const outcome = bulkEnabledToast(result, enabled);
+    toast(outcome.msg, outcome.kind);
+  } catch (err) {
+    toast(`${what} failed — ${errText(err)}`, "err");
+  } finally {
+    S.busy = null;
+    await refreshJobs();
+  }
   render();
 }
 
 async function bulkRun(files: string[], dry: boolean): Promise<void> {
-  if (!files.length) {
-    toast("Select automations first", "warn");
+  const check = planBulk(files);
+  if (!check.ok) {
+    toast(check.reason, "warn");
     return;
   }
-  S.busy = `${dry ? "Dry-running" : "Running"} ${files.length} automation${files.length === 1 ? "" : "s"}`;
+  const list = check.files;
+  S.busy = `${dry ? "Dry-running" : "Running"} ${list.length} automation${list.length === 1 ? "" : "s"}`;
   renderChrome();
-  let done = 0;
-  let spoke = 0;
   try {
-    for (const file of files) {
-      const o = await backend().runJob(file, dry);
-      done += 1;
-      if (o.status !== "quiet" && o.status !== "off") spoke += 1;
-    }
-    toast(
-      `${dry ? "Dry ran" : "Ran"} ${done} automation${done === 1 ? "" : "s"}${
-        spoke ? ` · ${spoke} spoke` : " · all quiet"
-      }`,
-      spoke ? "warn" : "ok",
-    );
-    S.picked.clear();
+    const result = await applyBulk(list, (file) => backend().runJob(file, dry));
+    const outcome = bulkRunToast(result, dry);
+    toast(outcome.msg, outcome.kind);
+    if (!result.failed.length) S.picked.clear();
   } catch (err) {
     toast(`${dry ? "Dry run" : "Run"} failed — ${errText(err)}`, "err");
   } finally {
@@ -1287,6 +1291,11 @@ function boot(): void {
 
   onChange(render);
   render();
+
+  // Resolved paths are decoration for most views: kick the lookup off after
+  // the initial render and never await it. A failure leaves S.paths empty and
+  // the top bar keeps its "MacOps" fallback instead of raising an error.
+  void loadPaths();
 
   void refreshJobs().then((data) => {
     if (data) primeView();
