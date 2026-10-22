@@ -29,11 +29,57 @@ pub struct App {
 type R<T> = Result<T, String>;
 fn e<E: std::fmt::Display>(err: E) -> String { err.to_string() }
 
+/// Run a blocking task off Tauri's main thread and flatten the join error.
+///
+/// Tauri runs SYNCHRONOUS commands on the main thread — the webview's event
+/// loop — so file I/O, a child process or an SQLite query freezes the whole
+/// window for its duration. Splitting the spawn from `with_app` keeps a seam
+/// the tests can drive without a Tauri runtime: a panic in the task must come
+/// back as the error string the UI shows, never as an unwind through the
+/// command.
+async fn off_main<T, F>(task: F) -> R<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> R<T> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(task)
+        .await
+        .map_err(|err| format!("task failed: {err}"))?
+}
+
+/// Synchronous commands used to run one at a time on the main thread. State
+/// updates are read-modify-write on one JSON file, and `state::save` reuses a
+/// single `.tmp` path, so allowing those bodies to run concurrently would
+/// lose updates or interleave writes into the same temp file. This keeps
+/// their order unchanged now that they share the blocking pool.
+static COMMAND_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Convert a command body into the `spawn_blocking` shape `run_job` uses.
+///
+/// An async command cannot hold a borrowed `State<'_, App>` across an await,
+/// so the command takes the owned `AppHandle` and resolves `State<App>` inside
+/// the blocking closure, where a synchronous borrow is safe.
+async fn with_app<T, F>(app: tauri::AppHandle, task: F) -> R<T>
+where
+    T: Send + 'static,
+    F: FnOnce(&App) -> R<T> + Send + 'static,
+{
+    off_main(move || {
+        // Recover from a poisoned lock: one panicking command must not stop
+        // every later command from running.
+        let _guard = COMMAND_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        task(app.state::<App>().inner())
+    })
+    .await
+}
+
 /// Merge what is on disk (jobs/*.sh) with desired state (console.json) and
 /// last-run facts (SQLite). Disk is authoritative about which automations
 /// EXIST; console.json only decorates them.
-#[tauri::command]
-fn list_jobs(app: tauri::State<'_, App>) -> R<Vec<Job>> {
+///
+/// The body is split out so `load_profile` can reuse it synchronously inside
+/// its own blocking task.
+fn collect_jobs(app: &App) -> R<Vec<Job>> {
     let metas = jobs::scan(&app.automations_root).map_err(e)?;
     let st = state::load(&app.automations_root);
     let mut out = Vec::with_capacity(metas.len());
@@ -56,6 +102,11 @@ fn list_jobs(app: tauri::State<'_, App>) -> R<Vec<Job>> {
     Ok(out)
 }
 
+#[tauri::command]
+async fn list_jobs(app: tauri::AppHandle) -> R<Vec<Job>> {
+    with_app(app, collect_jobs).await
+}
+
 fn prettify(label: &str) -> String {
     let mut s = label.replace('-', " ");
     if let Some(c) = s.get_mut(0..1) { c.make_ascii_uppercase(); }
@@ -63,76 +114,94 @@ fn prettify(label: &str) -> String {
 }
 
 #[tauri::command]
-fn set_enabled(app: tauri::State<'_, App>, file: String, enabled: bool) -> R<()> {
-    let mut st = state::load(&app.automations_root);
-    let entry = st.jobs.entry(file.clone()).or_insert_with(|| state::JobState {
-        enabled: true, schedule: Schedule::default(), title: None, group: None,
-    });
-    entry.enabled = enabled;
-    let sched = entry.schedule.clone();
-    state::save(&app.automations_root, &st).map_err(e)?;
-    if enabled {
-        launchd::install(&app.tool_root, &app.automations_root, &file, &sched).map_err(e)
-    } else {
-        launchd::uninstall(&file).map_err(e)
-    }
+async fn set_enabled(app: tauri::AppHandle, file: String, enabled: bool) -> R<()> {
+    with_app(app, move |app| {
+        let mut st = state::load(&app.automations_root);
+        let entry = st.jobs.entry(file.clone()).or_insert_with(|| state::JobState {
+            enabled: true, schedule: Schedule::default(), title: None, group: None,
+        });
+        entry.enabled = enabled;
+        let sched = entry.schedule.clone();
+        state::save(&app.automations_root, &st).map_err(e)?;
+        if enabled {
+            launchd::install(&app.tool_root, &app.automations_root, &file, &sched).map_err(e)
+        } else {
+            launchd::uninstall(&file).map_err(e)
+        }
+    })
+    .await
 }
 
 #[tauri::command]
-fn set_schedule(app: tauri::State<'_, App>, file: String, schedule: Schedule) -> R<()> {
-    let mut st = state::load(&app.automations_root);
-    let entry = st.jobs.entry(file.clone()).or_insert_with(|| state::JobState {
-        enabled: true, schedule: Schedule::default(), title: None, group: None,
-    });
-    entry.schedule = schedule.clone();
-    let enabled = entry.enabled;
-    state::save(&app.automations_root, &st).map_err(e)?;
-    if enabled { launchd::install(&app.tool_root, &app.automations_root, &file, &schedule).map_err(e)? }
-    Ok(())
+async fn set_schedule(app: tauri::AppHandle, file: String, schedule: Schedule) -> R<()> {
+    with_app(app, move |app| {
+        let mut st = state::load(&app.automations_root);
+        let entry = st.jobs.entry(file.clone()).or_insert_with(|| state::JobState {
+            enabled: true, schedule: Schedule::default(), title: None, group: None,
+        });
+        entry.schedule = schedule.clone();
+        let enabled = entry.enabled;
+        state::save(&app.automations_root, &st).map_err(e)?;
+        if enabled { launchd::install(&app.tool_root, &app.automations_root, &file, &schedule).map_err(e)? }
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
-fn set_timeout(app: tauri::State<'_, App>, file: String, secs: u32) -> R<()> {
-    jobs::set_timeout(&paths::jobs_dir(&app.automations_root).join(&file), secs).map_err(e)
+async fn set_timeout(app: tauri::AppHandle, file: String, secs: u32) -> R<()> {
+    with_app(app, move |app| {
+        jobs::set_timeout(&paths::jobs_dir(&app.automations_root).join(&file), secs).map_err(e)
+    })
+    .await
 }
 
 #[tauri::command]
-fn set_meta(app: tauri::State<'_, App>, file: String, title: Option<String>, group: Option<String>) -> R<()> {
-    let mut st = state::load(&app.automations_root);
-    let entry = st.jobs.entry(file).or_insert_with(|| state::JobState {
-        enabled: true, schedule: Schedule::default(), title: None, group: None,
-    });
-    if title.is_some() { entry.title = title; }
-    if group.is_some() { entry.group = group; }
-    state::save(&app.automations_root, &st).map_err(e)
+async fn set_meta(app: tauri::AppHandle, file: String, title: Option<String>, group: Option<String>) -> R<()> {
+    with_app(app, move |app| {
+        let mut st = state::load(&app.automations_root);
+        let entry = st.jobs.entry(file).or_insert_with(|| state::JobState {
+            enabled: true, schedule: Schedule::default(), title: None, group: None,
+        });
+        if title.is_some() { entry.title = title; }
+        if group.is_some() { entry.group = group; }
+        state::save(&app.automations_root, &st).map_err(e)
+    })
+    .await
 }
 
 #[tauri::command]
-fn create_job(app: tauri::State<'_, App>, spec: NewJob) -> R<String> {
-    let file = jobs::create(&app.automations_root, &spec).map_err(e)?;
-    let diags = jobs::validate(&paths::jobs_dir(&app.automations_root).join(&file)).map_err(e)?;
-    if !diags.is_empty() {
-        let _ = jobs::delete(&app.automations_root, &file, false);
-        return Err(format!("generated script failed validation:\n{}", diags.join("\n")));
-    }
-    let mut st = state::load(&app.automations_root);
-    st.jobs.insert(file.clone(), state::JobState {
-        enabled: false, // scheduled only after a clean dry run
-        schedule: spec.schedule.clone(),
-        title: Some(spec.title.clone()),
-        group: Some(spec.group.clone()),
-    });
-    state::save(&app.automations_root, &st).map_err(e)?;
-    Ok(file)
+async fn create_job(app: tauri::AppHandle, spec: NewJob) -> R<String> {
+    with_app(app, move |app| {
+        let file = jobs::create(&app.automations_root, &spec).map_err(e)?;
+        let diags = jobs::validate(&paths::jobs_dir(&app.automations_root).join(&file)).map_err(e)?;
+        if !diags.is_empty() {
+            let _ = jobs::delete(&app.automations_root, &file, false);
+            return Err(format!("generated script failed validation:\n{}", diags.join("\n")));
+        }
+        let mut st = state::load(&app.automations_root);
+        st.jobs.insert(file.clone(), state::JobState {
+            enabled: false, // scheduled only after a clean dry run
+            schedule: spec.schedule.clone(),
+            title: Some(spec.title.clone()),
+            group: Some(spec.group.clone()),
+        });
+        state::save(&app.automations_root, &st).map_err(e)?;
+        Ok(file)
+    })
+    .await
 }
 
 #[tauri::command]
-fn delete_job(app: tauri::State<'_, App>, file: String, keep_script: bool) -> R<()> {
-    launchd::uninstall(&file).map_err(e)?;
-    let mut st = state::load(&app.automations_root);
-    st.jobs.remove(&file);
-    state::save(&app.automations_root, &st).map_err(e)?;
-    jobs::delete(&app.automations_root, &file, keep_script).map_err(e)
+async fn delete_job(app: tauri::AppHandle, file: String, keep_script: bool) -> R<()> {
+    with_app(app, move |app| {
+        launchd::uninstall(&file).map_err(e)?;
+        let mut st = state::load(&app.automations_root);
+        st.jobs.remove(&file);
+        state::save(&app.automations_root, &st).map_err(e)?;
+        jobs::delete(&app.automations_root, &file, keep_script).map_err(e)
+    })
+    .await
 }
 
 /// Run now, in-process (not via launchd) so the UI can stream the outcome.
@@ -190,60 +259,72 @@ async fn run_job(app: tauri::AppHandle, file: String, dry: bool) -> R<RunOutcome
 }
 
 #[tauri::command]
-fn runs_for(app: tauri::State<'_, App>, file: String, limit: i64) -> R<Vec<Run>> {
-    app.db.runs_for(&file, limit).map_err(e)
+async fn runs_for(app: tauri::AppHandle, file: String, limit: i64) -> R<Vec<Run>> {
+    with_app(app, move |app| app.db.runs_for(&file, limit).map_err(e)).await
 }
 
 #[tauri::command]
-fn fleet_history(app: tauri::State<'_, App>, days: i64) -> R<Vec<DayStat>> {
-    let st = state::load(&app.automations_root);
-    let groups: BTreeMap<String, String> = st.jobs.iter()
-        .map(|(f, j)| (f.clone(), j.group.clone().unwrap_or_else(|| "Ungrouped".into())))
-        .collect();
-    app.db.fleet_history(days, &groups).map_err(e)
+async fn fleet_history(app: tauri::AppHandle, days: i64) -> R<Vec<DayStat>> {
+    with_app(app, move |app| {
+        let st = state::load(&app.automations_root);
+        let groups: BTreeMap<String, String> = st.jobs.iter()
+            .map(|(f, j)| (f.clone(), j.group.clone().unwrap_or_else(|| "Ungrouped".into())))
+            .collect();
+        app.db.fleet_history(days, &groups).map_err(e)
+    })
+    .await
 }
 
 #[tauri::command]
-fn search_logs(app: tauri::State<'_, App>, q: String, limit: i64) -> R<Vec<Run>> {
-    app.db.search(&q, limit).map_err(e)
+async fn search_logs(app: tauri::AppHandle, q: String, limit: i64) -> R<Vec<Run>> {
+    with_app(app, move |app| app.db.search(&q, limit).map_err(e)).await
 }
 
 /// Concurrency per minute-of-day across all enabled automations, for the
 /// load histogram and the stagger assistant.
 #[tauri::command]
-fn load_profile(app: tauri::State<'_, App>) -> R<Vec<u32>> {
-    let jobs_list = list_jobs(app)?;
-    let mut mins = vec![0u32; 1440];
-    for j in jobs_list.iter().filter(|j| j.enabled) {
-        let dur_min = j.last.as_ref().map(|r| (r.duration_s / 60).max(1)).unwrap_or(1) as usize;
-        for s in j.schedule.starts() {
-            for i in 0..dur_min { mins[(s as usize + i) % 1440] += 1; }
+async fn load_profile(app: tauri::AppHandle) -> R<Vec<u32>> {
+    with_app(app, |app| {
+        let jobs_list = collect_jobs(app)?;
+        let mut mins = vec![0u32; 1440];
+        for j in jobs_list.iter().filter(|j| j.enabled) {
+            let dur_min = j.last.as_ref().map(|r| (r.duration_s / 60).max(1)).unwrap_or(1) as usize;
+            for s in j.schedule.starts() {
+                for i in 0..dur_min { mins[(s as usize + i) % 1440] += 1; }
+            }
         }
-    }
-    Ok(mins)
+        Ok(mins)
+    })
+    .await
 }
 
 #[tauri::command]
-fn validate_job(app: tauri::State<'_, App>, file: String) -> R<Vec<String>> {
-    jobs::validate(&paths::jobs_dir(&app.automations_root).join(&file)).map_err(e)
+async fn validate_job(app: tauri::AppHandle, file: String) -> R<Vec<String>> {
+    with_app(app, move |app| {
+        jobs::validate(&paths::jobs_dir(&app.automations_root).join(&file)).map_err(e)
+    })
+    .await
 }
 
 #[tauri::command]
-fn prune_runs(app: tauri::State<'_, App>, keep_days: i64) -> R<usize> {
-    app.db.prune(keep_days).map_err(e)
+async fn prune_runs(app: tauri::AppHandle, keep_days: i64) -> R<usize> {
+    with_app(app, move |app| app.db.prune(keep_days).map_err(e)).await
 }
 
 #[tauri::command]
-fn reindex(app: tauri::State<'_, App>) -> R<usize> {
-    // Rebuild from both: the text log recovers history that predates the
-    // structured feed, then the feed lands last so it wins wherever both
-    // describe the same run. The count is records read, not distinct rows.
-    let log = app.db.ingest_log(&paths::run_log(&app.automations_root)).map_err(e)?;
-    let runs = app
-        .db
-        .ingest_runs_jsonl(&paths::runs_jsonl(&app.automations_root))
-        .map_err(e)?;
-    Ok(log + runs)
+async fn reindex(app: tauri::AppHandle) -> R<usize> {
+    with_app(app, |app| {
+        // Rebuild from both: the text log recovers history that predates the
+        // structured feed, then the feed lands last so it wins wherever both
+        // describe the same run. The count is records read, not distinct rows.
+        let log = app.db.ingest_log(&paths::run_log(&app.automations_root)).map_err(e)?;
+        let runs = app
+            .db
+            .ingest_runs_jsonl(&paths::runs_jsonl(&app.automations_root))
+            .map_err(e)?;
+        Ok(log + runs)
+    })
+    .await
 }
 
 /// The resolved split, so the GUI can show where the tool lives versus where
@@ -257,6 +338,9 @@ pub struct ResolvedPaths {
     pub source: String,
 }
 
+/// Left synchronous on purpose: it touches no file, spawns nothing and runs
+/// no query — only field reads plus a `$HOME` lookup to build the config path
+/// string, so it cannot block the event loop.
 #[tauri::command]
 fn resolved_paths(app: tauri::State<'_, App>) -> R<ResolvedPaths> {
     Ok(ResolvedPaths {
@@ -277,19 +361,23 @@ fn resolved_paths(app: tauri::State<'_, App>) -> R<ResolvedPaths> {
 /// a live switch. The UI must say "restart to apply"; a half-switched console
 /// with a stale database would be worse than asking for a restart.
 #[tauri::command]
-fn set_automations_root(app: tauri::State<'_, App>, path: String) -> R<ResolvedPaths> {
-    let config = paths::config_path().map_err(e)?;
-    paths::set_config_root(&config, &app.tool_root, &path).map_err(e)?;
+async fn set_automations_root(app: tauri::AppHandle, path: String) -> R<ResolvedPaths> {
+    with_app(app, move |app| {
+        let config = paths::config_path().map_err(e)?;
+        paths::set_config_root(&config, &app.tool_root, &path).map_err(e)?;
 
-    // Re-resolve for the answer: with $MOPS_AUTOMATIONS_ROOT set the effective
-    // root is still the environment value, and `source` must say so.
-    let (root, source) = paths::automations_root_with_source().map_err(e)?;
-    Ok(ResolvedPaths {
-        tool_root: app.tool_root.to_string_lossy().into_owned(),
-        automations_root: root.to_string_lossy().into_owned(),
-        config_path: config.to_string_lossy().into_owned(),
-        source: source.to_string(),
+        // Re-resolve for the answer: with $MOPS_AUTOMATIONS_ROOT set the
+        // effective root is still the environment value, and `source` must
+        // say so.
+        let (root, source) = paths::automations_root_with_source().map_err(e)?;
+        Ok(ResolvedPaths {
+            tool_root: app.tool_root.to_string_lossy().into_owned(),
+            automations_root: root.to_string_lossy().into_owned(),
+            config_path: config.to_string_lossy().into_owned(),
+            source: source.to_string(),
+        })
     })
+    .await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -318,4 +406,86 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static SEQ: AtomicU32 = AtomicU32::new(0);
+
+    struct Tmp(PathBuf);
+    impl Tmp {
+        fn new(tag: &str) -> Tmp {
+            let n = SEQ.fetch_add(1, Ordering::SeqCst);
+            let dir = std::env::temp_dir().join(format!(
+                "machine-ops-lib-test-{}-{}-{}",
+                std::process::id(),
+                tag,
+                n
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(dir.join("jobs")).unwrap();
+            Tmp(dir)
+        }
+        fn app(&self) -> App {
+            App {
+                tool_root: self.0.clone(),
+                automations_root: self.0.clone(),
+                automations_source: "env",
+                db: Db::open(&self.0.join("state/console.db")).unwrap(),
+            }
+        }
+    }
+    impl Drop for Tmp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// `with_app` cannot be driven without a live `AppHandle`, so the seam it
+    /// uses is tested directly: a converted command's work must still yield
+    /// its ordinary value.
+    #[test]
+    fn off_main_returns_the_task_value() {
+        let got = tauri::async_runtime::block_on(off_main(|| Ok::<u32, String>(41 + 1)));
+        assert_eq!(got, Ok(42));
+    }
+
+    /// A panic in blocking work must surface as the `task failed: …` string
+    /// the UI can show — never unwind through the command.
+    #[test]
+    fn off_main_turns_a_panicking_task_into_an_error_string() {
+        let err = tauri::async_runtime::block_on(off_main(|| -> R<()> { panic!("boom") }))
+            .unwrap_err();
+        assert!(err.starts_with("task failed: "), "{err}");
+        assert!(err.contains("boom"), "{err}");
+    }
+
+    /// The synchronous core `list_jobs` now runs on the blocking thread still
+    /// merges disk, state and SQLite exactly as the command used to.
+    #[test]
+    fn collect_jobs_keeps_the_command_surface() {
+        let tmp = Tmp::new("collect-jobs");
+        std::fs::write(
+            tmp.0.join("jobs/10-test.sh"),
+            "#!/bin/bash\n# tier: daily\n# timeout: 120\necho hi\n",
+        )
+        .unwrap();
+        let app = tmp.app();
+
+        let jobs = collect_jobs(&app).unwrap();
+        assert_eq!(jobs.len(), 1);
+        let job = &jobs[0];
+        assert_eq!(job.file, "10-test.sh");
+        assert_eq!(job.label, "10-test");
+        assert_eq!(job.title, "10 test");
+        assert_eq!(job.group, "Ungrouped");
+        assert_eq!(job.tier, "daily");
+        assert_eq!(job.timeout, 120);
+        assert_eq!(job.kind, "sh");
+        assert!(job.enabled, "missing state must fail safe toward enabled");
+        assert!(job.last.is_none());
+    }
 }
