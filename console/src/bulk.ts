@@ -31,6 +31,23 @@ export interface BulkToast {
 
 export type BulkPlan = { ok: true; files: string[] } | { ok: false; reason: string };
 
+/**
+ * Fold a failed fleet refresh into the action's own report.
+ *
+ * The writes and the refresh are independent facts. When both failed, the
+ * per-file result is the more specific answer and stays in front; the refresh
+ * failure is appended so it is never swallowed — a green toast over stale data
+ * is exactly the silent failure this project refuses to ship.
+ */
+export function withRefreshFailure(outcome: BulkToast, refreshError: string | null): BulkToast {
+  if (!refreshError) return outcome;
+  const suffix =
+    outcome.kind === "err"
+      ? ` — fleet refresh also failed: ${refreshError}`
+      : ` — fleet refresh failed: ${refreshError}`;
+  return { msg: `${outcome.msg}${suffix}`, kind: "err" };
+}
+
 /** Refuse an empty selection before any file is touched. */
 export function planBulk(files: readonly string[]): BulkPlan {
   if (!files.length) return { ok: false, reason: "Select automations first" };

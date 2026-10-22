@@ -9,7 +9,8 @@
  */
 import { backend, errText, setBackend } from "./api";
 import type { Unsubscribe } from "./api";
-import { applyBulk, bulkEnabledToast, bulkRunToast, planBulk } from "./bulk";
+import { bulkRun, bulkSetEnabled, bulkSetGroup } from "./bulkActions";
+import type { BulkPaint } from "./bulkActions";
 import { closeLayer, inputValue, numberValue, setLayer, $ } from "./dom";
 import { fakeBackend } from "./fake";
 import {
@@ -60,7 +61,7 @@ import type { Job, Schedule, ScheduleMode, Status } from "./types";
 import { STATUS_META, statusOf } from "./types";
 import { skeletonRows } from "./views/common";
 import { vDetail } from "./views/detail";
-import { GroupCtx, applyBulkGroup, bulkGroupToast, planBulkGroup, vGroupModal } from "./views/group";
+import { GroupCtx, planBulkGroup, vGroupModal } from "./views/group";
 import { vJobs } from "./views/jobs";
 import { vLogs } from "./views/logs";
 import { NewJobForm, defaultForm, submitNewJob, vNewJob } from "./views/newjob";
@@ -746,7 +747,7 @@ function applyGroupModal(): void {
     toast(check.reason, "warn");
     return;
   }
-  void bulkSetGroup(check.plan.files, check.plan.group);
+  void bulkSetGroup(check.plan.files, check.plan.group, bulkPaint);
 }
 
 /* ------------------------------- actions ------------------------------- */
@@ -788,77 +789,7 @@ function toggleTheme(): void {
   applyTheme(effectiveTheme() === "dark" ? "light" : "dark");
 }
 
-async function bulkSetEnabled(files: string[], enabled: boolean): Promise<void> {
-  const check = planBulk(files);
-  if (!check.ok) {
-    toast(check.reason, "warn");
-    return;
-  }
-  const list = check.files;
-  const what = `${enabled ? "Enabled" : "Disabled"} ${list.length} automation${list.length === 1 ? "" : "s"}`;
-  S.picked.clear();
-  S.busy = what;
-  render();
-  try {
-    const result = await applyBulk(list, (file) => backend().setEnabled(file, enabled));
-    const outcome = bulkEnabledToast(result, enabled);
-    toast(outcome.msg, outcome.kind);
-  } catch (err) {
-    toast(`${what} failed — ${errText(err)}`, "err");
-  } finally {
-    S.busy = null;
-    await refreshJobs();
-  }
-  render();
-}
-
-async function bulkRun(files: string[], dry: boolean): Promise<void> {
-  const check = planBulk(files);
-  if (!check.ok) {
-    toast(check.reason, "warn");
-    return;
-  }
-  const list = check.files;
-  S.busy = `${dry ? "Dry-running" : "Running"} ${list.length} automation${list.length === 1 ? "" : "s"}`;
-  renderChrome();
-  try {
-    const result = await applyBulk(list, (file) => backend().runJob(file, dry));
-    const outcome = bulkRunToast(result, dry);
-    toast(outcome.msg, outcome.kind);
-    if (!result.failed.length) S.picked.clear();
-  } catch (err) {
-    toast(`${dry ? "Dry run" : "Run"} failed — ${errText(err)}`, "err");
-  } finally {
-    S.busy = null;
-    await refreshJobs();
-  }
-}
-
-async function bulkSetGroup(files: string[], raw: string): Promise<void> {
-  const check = planBulkGroup(files, raw);
-  if (!check.ok) {
-    toast(check.reason, "warn");
-    return;
-  }
-  const { group } = check.plan;
-  S.picked.clear();
-  S.busy = `Moving ${check.plan.files.length} automation${check.plan.files.length === 1 ? "" : "s"} to ${group}`;
-  renderChrome();
-  try {
-    const result = await applyBulkGroup(check.plan.files, group, (file, title, next) =>
-      backend().setMeta(file, title, next),
-    );
-    const outcome = bulkGroupToast(result, group);
-    toast(outcome.msg, outcome.kind);
-  } catch (err) {
-    toast(`Move to group failed — ${errText(err)}`, "err");
-  } finally {
-    S.busy = null;
-    closeModal();
-    render();
-    await refreshJobs();
-  }
-}
+const bulkPaint: BulkPaint = { view: render, chrome: renderChrome, groupDone: closeModal };
 
 function handleBulk(kind: string): void {
   switch (kind) {
@@ -867,13 +798,13 @@ function handleBulk(kind: string): void {
       render();
       break;
     case "enable":
-      void bulkSetEnabled([...S.picked], true);
+      void bulkSetEnabled([...S.picked], true, bulkPaint);
       break;
     case "disable":
-      void bulkSetEnabled([...S.picked], false);
+      void bulkSetEnabled([...S.picked], false, bulkPaint);
       break;
     case "run":
-      void bulkRun([...S.picked], false);
+      void bulkRun([...S.picked], false, bulkPaint);
       break;
     case "stagger":
       openStaggerModal();
