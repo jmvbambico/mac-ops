@@ -267,8 +267,8 @@ export function vNewJob(form: NewJobForm, error: string | null): string {
       ${
         form.kind === "sh"
           ? `<div class="note" style="margin-top:13px"><span style="color:var(--accent);flex:0 0 auto">${IC.warn}</span>
-              <div>A blank scaffold: it prints “nothing to do yet” until you edit the file, so it cannot pass a
-                clean dry run as it is.</div></div>`
+              <div>A blank scaffold: it stays silent and logs that it does nothing until you add real work,
+                so it can pass a dry run while still being useless.</div></div>`
           : ""
       }
       <div class="note" style="margin-top:13px"><span style="color:var(--accent);flex:0 0 auto">${IC.check}</span>
