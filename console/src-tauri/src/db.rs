@@ -380,8 +380,25 @@ fn upsert_run(conn: &Connection, r: &NewRun) -> Result<i64> {
              rc         = excluded.rc,
              status     = excluded.status,
              dry_run    = excluded.dry_run,
-             summary    = excluded.summary,
-             stdout     = excluded.stdout
+             -- The two TEXT columns are the one exception to last-write-wins.
+             -- The producer (`record_run` in lib/common.sh) only ever sees
+             -- stdout, so a quiet run's feed record legitimately carries
+             -- summary='' / stdout='' (Principle I: a nominal run prints
+             -- NOTHING). The text log, meanwhile, still holds the job's
+             -- `log_line` detail for that same run. Production ingests the
+             -- text log first and the feed second, so an unconditional
+             -- overwrite let the feed's empty strings CLOBBER the rich
+             -- summary the text log had just recovered -- blanking every
+             -- quiet run's row in the Logs view. The feed stays authoritative
+             -- everywhere it actually carries data: only the empty case
+             -- defers to what is already stored.
+             --
+             -- duration_s, rc, status and dry_run deliberately keep
+             -- overwriting unconditionally: they are not text, the feed is
+             -- genuinely authoritative for them, and 0 / false are
+             -- legitimate values that must be able to win.
+             summary    = CASE WHEN excluded.summary <> '' THEN excluded.summary ELSE runs.summary END,
+             stdout     = CASE WHEN excluded.stdout  <> '' THEN excluded.stdout  ELSE runs.stdout  END
          RETURNING id",
         rusqlite::params![
             r.job,
@@ -1187,6 +1204,136 @@ this line is not a log line at all
         assert_eq!(row2.status, Status::Fail);
         assert_eq!(row2.duration_s, 5);
         assert_eq!(row2.summary, "log-side summary rc=3 dry_run=0");
+    }
+
+    /// The data-loss regression. `record_run` in lib/common.sh only ever
+    /// sees stdout, so a quiet run's feed record legitimately carries
+    /// summary='' / stdout='' (Principle I: a nominal run prints NOTHING).
+    /// The text log still holds that run's `log_line` detail. Production
+    /// ingests the text log first and the feed second, so an unconditional
+    /// overwrite let the feed's empty strings blank the Logs view.
+    #[test]
+    fn an_empty_feed_record_does_not_blank_the_log_detail() {
+        const JOB: &str = "60-quiet.sh";
+        let t = Tmp::new("empty-feed");
+        let log = t.path("machine-ops.log");
+        let runs = t.path("runs.jsonl");
+        std::fs::write(
+            &log,
+            "2026-10-21 02:00:22 [run-job] start job=60-quiet.sh tier=daily timeout=900s\n\
+             2026-10-21 02:00:30 [quiet] reclaimed=unknown items=13 items rc=0 dry_run=0\n\
+             2026-10-21 02:00:31 [run-job] finish job=60-quiet.sh rc=0 timeout=0 tier=daily elapsed=9s\n",
+        )
+        .unwrap();
+
+        let db = t.db();
+        db.ingest_log(&log).unwrap();
+        let from_log = db.last_run(JOB).unwrap().unwrap();
+        assert_eq!(
+            from_log.summary, "reclaimed=unknown items=13 items rc=0 dry_run=0",
+            "the crafted log line must really parse, or this test is vacuous"
+        );
+
+        // The feed record for the same run: a quiet run, so no stdout.
+        std::fs::write(
+            &runs,
+            format!(
+                "{{\"job\": \"{JOB}\", \"started_at\": {}, \"duration_s\": 9, \"rc\": 0, \"status\": \"quiet\", \"dry_run\": false, \"summary\": \"\", \"stdout\": \"\"}}\n",
+                from_log.started_at
+            ),
+        )
+        .unwrap();
+        db.ingest_runs_jsonl(&runs).unwrap();
+
+        let row = db.last_run(JOB).unwrap().unwrap();
+        assert_eq!(row.started_at, from_log.started_at, "both records share the key");
+        assert_eq!(
+            row.summary, "reclaimed=unknown items=13 items rc=0 dry_run=0",
+            "an empty feed summary must not blank the text log's detail"
+        );
+        assert_eq!(row.stdout, "");
+    }
+
+    /// The flip side: the feed stays authoritative wherever it actually
+    /// carries data. The empty case is the ONLY exception.
+    #[test]
+    fn a_feed_record_with_data_still_overwrites_the_log_detail() {
+        const JOB: &str = "60-feed-wins.sh";
+        let t = Tmp::new("feed-wins");
+        let log = t.path("machine-ops.log");
+        let runs = t.path("runs.jsonl");
+        std::fs::write(
+            &log,
+            "2026-10-21 03:00:00 [run-job] start job=60-feed-wins.sh tier=daily timeout=900s\n\
+             2026-10-21 03:00:04 [feed-wins] log-side summary rc=0 dry_run=0\n\
+             2026-10-21 03:00:05 [run-job] finish job=60-feed-wins.sh rc=0 timeout=0 tier=daily elapsed=5s\n",
+        )
+        .unwrap();
+
+        let db = t.db();
+        db.ingest_log(&log).unwrap();
+        let from_log = db.last_run(JOB).unwrap().unwrap();
+        assert_eq!(from_log.summary, "log-side summary rc=0 dry_run=0");
+
+        std::fs::write(
+            &runs,
+            format!(
+                "{{\"job\": \"{JOB}\", \"started_at\": {}, \"duration_s\": 42, \"rc\": 0, \"status\": \"quiet\", \"dry_run\": false, \"summary\": \"feed-side summary\", \"stdout\": \"feed stdout\"}}\n",
+                from_log.started_at
+            ),
+        )
+        .unwrap();
+        db.ingest_runs_jsonl(&runs).unwrap();
+
+        let row = db.last_run(JOB).unwrap().unwrap();
+        assert_eq!(row.summary, "feed-side summary", "feed summary must win");
+        assert_eq!(row.stdout, "feed stdout", "feed stdout must win");
+    }
+
+    /// The guard is scoped to the two TEXT columns. duration_s, rc, status
+    /// and dry_run keep overwriting unconditionally — 0 and false are
+    /// legitimate values that must be able to win.
+    #[test]
+    fn the_empty_feed_guard_does_not_leak_to_the_non_text_columns() {
+        const JOB: &str = "60-guard.sh";
+        let t = Tmp::new("guard-scope");
+        let log = t.path("machine-ops.log");
+        let runs = t.path("runs.jsonl");
+        std::fs::write(
+            &log,
+            "2026-10-21 04:00:00 [run-job] start job=60-guard.sh tier=daily timeout=900s\n\
+             2026-10-21 04:00:04 [guard] log-side summary rc=3 dry_run=1\n\
+             2026-10-21 04:00:05 [run-job] finish job=60-guard.sh rc=3 timeout=0 tier=daily elapsed=5s\n",
+        )
+        .unwrap();
+
+        let db = t.db();
+        db.ingest_log(&log).unwrap();
+        let from_log = db.last_run(JOB).unwrap().unwrap();
+        assert_eq!(from_log.rc, 3);
+        assert_eq!(from_log.status, Status::Fail);
+        assert_eq!(from_log.duration_s, 5);
+        assert!(from_log.dry_run, "the log says dry_run=1");
+
+        // A clean, non-dry feed record: rc=0 and dry_run=false must be able
+        // to overwrite the stored rc=3 / dry_run=true.
+        std::fs::write(
+            &runs,
+            format!(
+                "{{\"job\": \"{JOB}\", \"started_at\": {}, \"duration_s\": 42, \"rc\": 0, \"status\": \"quiet\", \"dry_run\": false, \"summary\": \"\", \"stdout\": \"\"}}\n",
+                from_log.started_at
+            ),
+        )
+        .unwrap();
+        db.ingest_runs_jsonl(&runs).unwrap();
+
+        let row = db.last_run(JOB).unwrap().unwrap();
+        assert_eq!(row.rc, 0, "feed rc=0 must overwrite the stored rc=3");
+        assert_eq!(row.status, Status::Quiet, "feed status must win");
+        assert_eq!(row.duration_s, 42, "feed duration must win");
+        assert!(!row.dry_run, "feed dry_run=false must overwrite the stored true");
+        // The two TEXT columns are the only ones that defer to what is
+        // already stored — see the two tests above.
     }
 
     #[test]
