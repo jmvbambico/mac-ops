@@ -199,7 +199,15 @@ fn prune_runs(app: tauri::State<'_, App>, keep_days: i64) -> R<usize> {
 
 #[tauri::command]
 fn reindex(app: tauri::State<'_, App>) -> R<usize> {
-    app.db.ingest_log(&paths::run_log(&app.automations_root)).map_err(e)
+    // Rebuild from both: the text log recovers history that predates the
+    // structured feed, then the feed lands last so it wins wherever both
+    // describe the same run. The count is records read, not distinct rows.
+    let log = app.db.ingest_log(&paths::run_log(&app.automations_root)).map_err(e)?;
+    let runs = app
+        .db
+        .ingest_runs_jsonl(&paths::runs_jsonl(&app.automations_root))
+        .map_err(e)?;
+    Ok(log + runs)
 }
 
 /// The resolved split, so the GUI can show where the tool lives versus where
@@ -257,8 +265,11 @@ pub fn run() {
     paths::ensure_dirs(&automations_root)
         .expect("cannot create jobs/, logs/ and state/ under the automations root");
     let db = Db::open(&paths::db_file(&automations_root)).expect("cannot open console.db");
-    // Best-effort backfill so a fresh database is not an empty console.
+    // Best-effort backfill so a fresh database is not an empty console. The
+    // text log restores older history, then the structured feed lands last:
+    // it is the primary source wherever both describe the same run.
     let _ = db.ingest_log(&paths::run_log(&automations_root));
+    let _ = db.ingest_runs_jsonl(&paths::runs_jsonl(&automations_root));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
