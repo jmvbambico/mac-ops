@@ -109,6 +109,7 @@ p{text-wrap:pretty}
 .dot.fail{background:var(--fail);--ring:var(--fail-bg)}
 .dot.hang{background:var(--hang);--ring:var(--hang-bg)}
 .dot.off{background:var(--off);--ring:var(--off-bg)}
+.dot.running{background:var(--accent);--ring:var(--accent-soft)}
 .badge{display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 7px;border-radius:5px;
   font-size:11px;font-weight:600;letter-spacing:.005em;white-space:nowrap}
 .badge.quiet{color:var(--quiet);background:var(--quiet-bg)}
@@ -116,6 +117,7 @@ p{text-wrap:pretty}
 .badge.fail{color:var(--fail);background:var(--fail-bg)}
 .badge.hang{color:var(--hang);background:var(--hang-bg)}
 .badge.off{color:var(--off);background:var(--off-bg)}
+.badge.running{color:var(--accent);background:var(--accent-soft)}
 .badge.tier{color:var(--ink-2);background:rgba(127,127,135,.13);font-weight:500;font-family:var(--mono);font-size:10.5px}
 
 /* ---------- buttons ---------- */

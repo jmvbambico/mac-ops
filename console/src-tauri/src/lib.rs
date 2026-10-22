@@ -7,11 +7,15 @@ mod jobs;
 mod launchd;
 mod paths;
 mod state;
+mod stream;
 mod types;
 
 use db::Db;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use tauri::Manager;
 use types::{DayStat, Job, NewJob, Run, RunOutcome, Schedule};
 
 pub struct App {
@@ -136,21 +140,55 @@ fn delete_job(app: tauri::State<'_, App>, file: String, keep_script: bool) -> R<
 /// Run now, in-process (not via launchd) so the UI can stream the outcome.
 /// The run is recorded best-effort: a database failure must never be
 /// reported as a job failure.
+///
+/// Async on purpose. Tauri runs SYNCHRONOUS commands on the main thread, and
+/// `jobs::run` blocks until the child exits, so a 105-second job froze the
+/// whole webview for 105 seconds. The blocking work moves to
+/// `spawn_blocking`, and the command itself holds no borrowed `State` across
+/// an await: it takes the owned `AppHandle` and resolves `State<App>` inside
+/// the blocking closure, where a borrow is safe.
+///
+/// While the job runs, a poller tails `logs/machine-ops.log` from the offset
+/// recorded BEFORE the child starts and emits line batches on `run-log`. The
+/// log is the durable record (Principle VI): the child's stdout is silent on
+/// success, so streaming stdout would show nothing.
 #[tauri::command]
-fn run_job(app: tauri::State<'_, App>, file: String, dry: bool) -> R<RunOutcome> {
-    let started = chrono::Utc::now().timestamp();
-    let out = jobs::run(&app.tool_root, &app.automations_root, &file, dry).map_err(e)?;
-    let _ = app.db.record_run(&types::NewRun {
-        job: file,
-        started_at: started,
-        duration_s: out.duration_s,
-        rc: out.rc,
-        status: out.status,
-        dry_run: dry,
-        summary: out.stdout.lines().next().unwrap_or("").to_string(),
-        stdout: out.stdout.clone(),
-    });
-    Ok(out)
+async fn run_job(app: tauri::AppHandle, file: String, dry: bool) -> R<RunOutcome> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<App>();
+        let tool_root = state.tool_root.clone();
+        let automations_root = state.automations_root.clone();
+
+        // Offset first, then start the poller, then the child: that order is
+        // what makes "new" mean this run. An overlapping scheduled run may
+        // interleave its lines; that is accepted by design.
+        let tail = stream::LogTail::at_end(&paths::run_log(&automations_root));
+        let done = Arc::new(AtomicBool::new(false));
+        let poller = stream::spawn(app.clone(), file.clone(), tail, done.clone());
+
+        let started = chrono::Utc::now().timestamp();
+        let result = jobs::run(&tool_root, &automations_root, &file, dry);
+
+        // Stop and join BEFORE returning so the final lines (including a
+        // trailing partial line) are emitted while the UI still listens.
+        done.store(true, Ordering::SeqCst);
+        let _ = poller.join();
+
+        let out = result.map_err(e)?;
+        let _ = state.db.record_run(&types::NewRun {
+            job: file,
+            started_at: started,
+            duration_s: out.duration_s,
+            rc: out.rc,
+            status: out.status,
+            dry_run: dry,
+            summary: out.stdout.lines().next().unwrap_or("").to_string(),
+            stdout: out.stdout.clone(),
+        });
+        Ok(out)
+    })
+    .await
+    .map_err(|err| format!("run task failed: {err}"))?
 }
 
 #[tauri::command]
