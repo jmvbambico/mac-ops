@@ -21,6 +21,18 @@ gates:
     run: "shellcheck bin/run bin/run-job lib/common.sh install.sh examples/jobs/*.sh tests/*.sh tests/fixtures/jobs/*.sh"
     scope: worker
 
+  # The five version surfaces (package.json, tauri.conf.json, Cargo.toml, both
+  # lock files' root entries) must agree. Cargo.lock is resolved via `cargo
+  # metadata --no-deps` and `cargo pkgid --locked`, both --offline: it needs
+  # the Rust toolchain on PATH (and fails loudly without it), but no network
+  # (--no-deps resolves no dependency graph, so no registry index is needed —
+  # verified against an empty CARGO_HOME) and builds nothing, so it stays fast
+  # (~0.4s). No pattern over Cargo.lock can work: a workspace member and a path
+  # dependency have identical shape, so only cargo resolves the identity.
+  - name: version-consistency
+    run: "bash tests/version-consistency.sh"
+    scope: worker
+
   - name: rust-check
     run: "cd console/src-tauri && cargo check --message-format=short"
     scope: worker

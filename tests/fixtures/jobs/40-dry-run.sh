@@ -11,11 +11,11 @@
 
 set -u
 
-TOOL_ROOT="${MOPS_TOOL_ROOT:-${MACHINE_OPS_TOOL_ROOT:?MOPS_TOOL_ROOT must point at the checkout under test}}"
+TOOL_ROOT="${MOPS_TOOL_ROOT:?MOPS_TOOL_ROOT must point at the checkout under test}"
 # shellcheck disable=SC1091 # tool root is resolved at runtime, not at parse time
 source "$TOOL_ROOT/lib/common.sh"
 
-DRY="${MOPS_DRY_RUN:-${MACHINE_OPS_DRY_RUN:-0}}"
+DRY="${MOPS_DRY_RUN:-0}"
 
 if [[ "$DRY" == "1" ]]; then
     log_line "[fixture-dry-run] dry run: would prune 2 stale caches, did nothing"

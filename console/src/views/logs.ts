@@ -108,7 +108,7 @@ export function vLogs(): string {
     <span class="mono">logs/job-&lt;slug&gt;.out.log</span> and the shared
     <span class="mono">machine-ops.log</span> keeps only the one-line-per-run summaries — otherwise a single
     chatty job rotates away everyone else's history. MacOps reads those summaries out of
-    <span class="mono">state/console.db</span>; <b>Reindex</b> in Settings re-ingests the log.</div>
+    <span class="mono">state/console.db</span>; <b>Reindex</b> in Settings re-ingests the logs.</div>
   </div>
   <div class="row muted" style="font-size:11px;gap:11px;margin-top:9px">
     ${(["quiet", "spoke", "fail", "hang"] as const)

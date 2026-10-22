@@ -32,7 +32,7 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # lib/common.sh belongs to the TOOL root, which may differ from this job's
 # automations root. bin/run and bin/run-job export MOPS_TOOL_ROOT.
-MACOPS_LIB="${MOPS_TOOL_ROOT:-${MACHINE_OPS_TOOL_ROOT:-$SCRIPT_DIR/..}}/lib"
+MACOPS_LIB="${MOPS_TOOL_ROOT:-$SCRIPT_DIR/..}/lib"
 # shellcheck disable=SC1091 # path resolved at runtime from the tool root
 if ! source "$MACOPS_LIB/common.sh"; then
     printf '40-skills-update: cannot load lib/common.sh\n' >&2
@@ -40,20 +40,18 @@ if ! source "$MACOPS_LIB/common.sh"; then
 fi
 
 LABEL="skills-update"
-DRY="${MOPS_DRY_RUN:-${MACHINE_OPS_DRY_RUN:-0}}"
+DRY="${MOPS_DRY_RUN:-0}"
 # Test seams: MOPS_SKILL_LOCK points at fixture lockfiles and MOPS_NPX at a
 # stub, so apply paths are provable without touching the live skills
-# installation (legacy MACHINE_OPS_* names accepted until the owner's
-# automations in ~/projects/machine-ops are migrated; expected 0.5.0).
-LOCKFILE="${MOPS_SKILL_LOCK:-${MACHINE_OPS_SKILL_LOCK:-$HOME/.agents/.skill-lock.json}}"
-NPX="${MOPS_NPX:-${MACHINE_OPS_NPX:-/opt/homebrew/bin/npx}}"
+# installation.
+LOCKFILE="${MOPS_SKILL_LOCK:-$HOME/.agents/.skill-lock.json}"
+NPX="${MOPS_NPX:-/opt/homebrew/bin/npx}"
 
 # is_online — cheap bounded reachability probe for the npm registry
 # (DNS + TCP 443, never the update itself). Same shape as the brew job's
-# probe; MOPS_FORCE_OFFLINE=1 (legacy MACHINE_OPS_FORCE_OFFLINE accepted)
-# forces the offline path for tests.
+# probe; MOPS_FORCE_OFFLINE=1 forces the offline path for tests.
 is_online() {
-    if [[ "${MOPS_FORCE_OFFLINE:-${MACHINE_OPS_FORCE_OFFLINE:-0}}" == "1" ]]; then
+    if [[ "${MOPS_FORCE_OFFLINE:-0}" == "1" ]]; then
         return 1
     fi
     if have nc; then
