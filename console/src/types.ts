@@ -66,7 +66,7 @@ export interface NewJob {
   kind: string; // mole | pkg | py | sh
   schedule: Schedule;
   timeout: number;
-  /** Python template: path to the .py file, relative to the repo root. */
+  /** Python template: path to the .py file, relative to the automations root (the folder that contains jobs/). */
   script_path?: string | null;
   /** Package template: brew | npm | pipx | cargo | rustup | gem */
   manager?: string | null;

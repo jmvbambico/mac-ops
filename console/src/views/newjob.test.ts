@@ -68,6 +68,13 @@ describe("vNewJob — the window renders for every kind", () => {
     expect(html).not.toContain('id="nj-manager"');
   });
 
+  it("says the script path is relative to the automations root, not the tool's checkout", () => {
+    const html = vNewJob(filled({ kind: "py" }), null);
+    expect(html).toContain("Relative to your automations root");
+    expect(html).not.toContain("repository");
+    expect(html).not.toContain("repo root");
+  });
+
   it("shows no per-kind field for a shell job", () => {
     const html = vNewJob(filled({ kind: "sh" }), null);
     expect(html).not.toContain('id="nj-subcommand"');

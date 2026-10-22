@@ -63,7 +63,7 @@ export interface NewJobForm {
   subcommand: string;
   /** pkg: brew | npm | pipx | cargo | rustup | gem */
   manager: string;
-  /** py: path to the .py file, relative to the repo root */
+  /** py: path to the .py file, relative to the automations root (the folder that contains jobs/) */
   scriptPath: string;
   mode: ScheduleMode;
   /** HH:MM, used by the daily and weekly modes */
@@ -197,7 +197,7 @@ function kindField(form: NewJobForm): string {
   if (form.kind === "py") {
     return `<div class="field"><label>python script path</label>
       <input class="inp" id="nj-script" value="${esc(form.scriptPath)}" placeholder="scripts/thing.py">
-      <div class="hint">Relative to the repository root, next to the job file.</div></div>`;
+      <div class="hint">Relative to your automations root — the folder that contains jobs/.</div></div>`;
   }
   return "";
 }
