@@ -432,8 +432,11 @@ select.inp{cursor:pointer;padding-right:5px}
   rgba(127,127,135,.10),rgba(127,127,135,.20),rgba(127,127,135,.10));
   background-size:200% 100%;animation:skel 1.1s linear infinite;min-height:13px}
 @keyframes skel{from{background-position:0 0}to{background-position:-200% 0}}
-.spin{display:inline-block;animation:spin 900ms linear infinite}
+.spin{display:inline-flex;align-items:center;justify-content:center;line-height:0;
+  animation:spin 900ms linear infinite;transform-origin:50% 50%}
+.spin svg{display:block}
 @keyframes spin{to{rotate:360deg}}
+@media (prefers-reduced-motion:reduce){.spin{animation:none}}
 
 /* brand mark (mop) in the titlebar */
 .brand-mark{display:inline-flex;align-items:center;color:var(--ink-2);margin-left:4px}
