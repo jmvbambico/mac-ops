@@ -83,6 +83,17 @@ export interface RunOutcome {
   timed_out: boolean;
 }
 
+/**
+ * One incremental batch of lines appended to `logs/machine-ops.log` while an
+ * on-demand run is in flight. `job` pins the batch to its run so a stale
+ * listener cannot render another automation's lines. Mirrors
+ * `RunLogBatch` in src-tauri/src/stream.rs.
+ */
+export interface RunLogBatch {
+  job: string;
+  lines: string[];
+}
+
 export const STATUS_META: Record<Status, { t: string; d: string }> = {
   quiet: { t: "Quiet", d: "Ran and said nothing — the healthy state" },
   spoke: { t: "Spoke", d: "Surfaced an alert on stdout" },
