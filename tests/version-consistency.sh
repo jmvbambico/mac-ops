@@ -8,15 +8,27 @@
 #   console/package.json
 #   console/src-tauri/tauri.conf.json
 #   console/src-tauri/Cargo.toml
-#   console/src-tauri/Cargo.lock        (this crate's own entry)
+#   console/src-tauri/Cargo.lock        (this crate's own resolved entry)
 #   console/package-lock.json           (the root package entry)
 #
 # A grep for the first "version" in a lock file would find a dependency
-# instead, so both lock files are read structurally: Cargo.lock by locating the
-# [[package]] block whose name matches the crate, package-lock.json by reading
-# the root package entry ("packages[""]"), never a dependency. python3 is used
-# for reliable JSON and block-aware TOML extraction; it is part of the base
-# system on macOS and on the GitHub runners.
+# instead. package-lock.json is read structurally, via the root package entry
+# ("packages[""]"), never a dependency.
+#
+# Cargo.lock is NOT parsed here at all. Its text gives a workspace member and a
+# path dependency identical shape (both are source-less [[package]] blocks), so
+# no pattern over it can prove which block is THIS crate. cargo can: it knows
+# the workspace graph. `cargo metadata --no-deps` yields the package's canonical
+# path-qualified ID, and `cargo pkgid --locked` resolves that ID to the version
+# recorded in Cargo.lock. A same-named crates.io or path dependency therefore
+# cannot be selected by mistake — cargo resolves by package identity, not name.
+#
+# Consequence: this gate needs the Rust toolchain on PATH (CI installs it and
+# the rust-check gate already runs cargo). If cargo is missing the gate FAILS
+# loudly rather than quietly checking four surfaces while claiming five.
+#
+# python3 is used for reliable JSON extraction; it is part of the base system
+# on macOS and on the GitHub runners.
 #
 # Silent on success (AGENTS.md Principle I): a nominal run prints NOTHING.
 
@@ -28,6 +40,8 @@ if ! EXTRACTED="$(python3 - "$TOOL_ROOT" <<'PY'
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 
 
@@ -103,48 +117,77 @@ def cargo_package_version(path):
     fail('%s has no [package] version' % path)
 
 
-def cargo_lock_version(path, package_name):
+def run_cargo(args, cwd):
+    cargo = shutil.which('cargo')
+    if not cargo:
+        fail('cargo is not on PATH; cannot check console/src-tauri/Cargo.lock '
+             '(the Rust toolchain is required)')
     try:
-        with open(path, encoding='utf-8') as fh:
-            text = fh.read()
-    except OSError as exc:
-        fail('cannot read %s: %s' % (path, exc))
-    # Inspect the [[package]] block for THIS crate AND this kind of package.
-    # The crate name alone is not enough: `console` is also a crates.io crate,
-    # so a dependency could introduce a second block with the same name. A
-    # workspace member / path package has NO `source` key, while every registry
-    # dependency has `source = "registry+..."`; that is the discriminator. We
-    # must NOT select by the Cargo.toml version — detecting a stale lock is one
-    # of the disagreements this gate exists to catch.
-    matches = []
-    for block in text.split('[[package]]')[1:]:
-        # A block's keys end at the next section header; the final block runs
-        # to EOF otherwise, so truncate before reading any key.
-        block = block.split('[[', 1)[0]
-        name = re.search(r'^name\s*=\s*"([^"]*)"', block, re.MULTILINE)
-        if not name or name.group(1) != package_name:
-            continue
-        if re.search(r'^source\s*=', block, re.MULTILINE):
-            continue
-        version = re.search(r'^version\s*=\s*"([^"]*)"', block, re.MULTILINE)
-        if not version:
-            fail('%s has a source-less [[package]] for %s without a version'
-                 % (path, package_name))
-        matches.append(version.group(1))
+        return subprocess.run(
+            [cargo] + args,
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        fail('cannot run cargo %s: %s' % (args[0], exc))
+
+
+def cargo_lock_version(root, package_name):
+    # Cargo.lock is authoritative here only if cargo reads it. `cargo metadata
+    # --no-deps --locked` needs the manifest but does NOT consult the lock (it
+    # reports the manifest version), so it is used solely to obtain the
+    # package's canonical, path-qualified ID. `cargo pkgid --locked` takes that
+    # ID and returns the version recorded in Cargo.lock — the resolved one.
+    # Both run --offline: neither needs the registry index, and the gate must
+    # never require network access.
+    src_tauri = os.path.join(root, 'console/src-tauri')
+    meta = run_cargo(
+        ['metadata', '--no-deps', '--format-version', '1', '--locked', '--offline'],
+        src_tauri,
+    )
+    if meta.returncode != 0:
+        detail = (meta.stderr or '').strip() or '(no stderr)'
+        fail('cargo metadata failed, so Cargo.toml and '
+             'console/src-tauri/Cargo.lock disagree or are unreadable: %s' % detail)
+    try:
+        data = json.loads(meta.stdout)
+    except ValueError as exc:
+        fail('cargo metadata produced invalid JSON: %s' % exc)
+
+    # With --no-deps, packages[] holds only this workspace's own package(s).
+    matches = [p for p in data.get('packages', [])
+               if p.get('name') == package_name and isinstance(p.get('id'), str)]
     if not matches:
-        fail('%s has no source-less [[package]] entry for %s'
-             % (path, package_name))
+        fail('cargo metadata reports no workspace package named %s' % package_name)
     if len(matches) > 1:
-        fail('%s has %d source-less [[package]] entries for %s: %s'
-             % (path, len(matches), package_name, ', '.join(matches)))
-    return matches[0]
+        fail('cargo metadata reports %d workspace packages named %s; '
+             'cannot pick the resolved version' % (len(matches), package_name))
+    # The ID looks like `path+file:///abs/dir#name@version`. Drop the trailing
+    # version so pkgid resolves it from Cargo.lock instead of the manifest.
+    spec = matches[0]['id'].rsplit('@', 1)[0]
+    if '#' not in spec:
+        fail('cargo metadata returned an unexpected package ID: %s'
+             % matches[0]['id'])
+
+    pkg = run_cargo(['pkgid', '--locked', '--offline', spec], src_tauri)
+    if pkg.returncode != 0:
+        detail = (pkg.stderr or '').strip() or '(no stderr)'
+        fail('cargo pkgid failed, so Cargo.lock has no entry for %s: %s'
+             % (package_name, detail))
+    resolved = (pkg.stdout or '').strip()
+    # `path+file:///abs/dir#name@version`
+    if '#' not in resolved or '@' not in resolved.rsplit('#', 1)[1]:
+        fail('cargo pkgid returned an unexpected package ID: %s' % resolved)
+    return resolved.rsplit('@', 1)[1]
 
 
 root = sys.argv[1]
 package_json = os.path.join(root, 'console/package.json')
 tauri_conf = os.path.join(root, 'console/src-tauri/tauri.conf.json')
 cargo_toml = os.path.join(root, 'console/src-tauri/Cargo.toml')
-cargo_lock = os.path.join(root, 'console/src-tauri/Cargo.lock')
 npm_lock = os.path.join(root, 'console/package-lock.json')
 
 crate = cargo_package_name(cargo_toml)
@@ -152,7 +195,7 @@ surfaces = [
     ('console/package.json', json_version(package_json)),
     ('console/src-tauri/tauri.conf.json', json_version(tauri_conf)),
     ('console/src-tauri/Cargo.toml', cargo_package_version(cargo_toml)),
-    ('console/src-tauri/Cargo.lock', cargo_lock_version(cargo_lock, crate)),
+    ('console/src-tauri/Cargo.lock', cargo_lock_version(root, crate)),
     ('console/package-lock.json', npm_root_version(npm_lock)),
 ]
 
