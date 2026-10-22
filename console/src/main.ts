@@ -58,6 +58,7 @@ import type { Job, RunOutcome, Schedule, ScheduleMode, Status } from "./types";
 import { STATUS_META, statusOf } from "./types";
 import { skeletonRows } from "./views/common";
 import { vDetail } from "./views/detail";
+import { GroupCtx, applyBulkGroup, bulkGroupToast, planBulkGroup, vGroupModal } from "./views/group";
 import { vJobs } from "./views/jobs";
 import { vLogs } from "./views/logs";
 import { NewJobForm, defaultForm, submitNewJob, vNewJob } from "./views/newjob";
@@ -380,6 +381,7 @@ function closeModal(): void {
   staggerCtx = null;
   newJobCtx = null;
   newJobErr = null;
+  groupCtx = null;
   closeLayer();
 }
 
@@ -740,6 +742,36 @@ async function confirmNewJob(): Promise<void> {
   render();
 }
 
+/* ------------------------------- group ------------------------------- */
+
+let groupCtx: GroupCtx | null = null;
+
+function openGroupModal(): void {
+  const files = [...S.picked];
+  if (!files.length) {
+    toast("Select automations first", "warn");
+    return;
+  }
+  S.palOpen = false;
+  groupCtx = {
+    files,
+    groups: groupsOf(jobs()).map((g) => g.name),
+    value: "",
+  };
+  setLayer(vGroupModal(groupCtx));
+}
+
+function applyGroupModal(): void {
+  const ctx = groupCtx;
+  if (!ctx) return;
+  const check = planBulkGroup(ctx.files, inputValue("#g-group"));
+  if (!check.ok) {
+    toast(check.reason, "warn");
+    return;
+  }
+  void bulkSetGroup(check.plan.files, check.plan.group);
+}
+
 /* ------------------------------- actions ------------------------------- */
 
 async function retry(what: string): Promise<void> {
@@ -822,6 +854,32 @@ async function bulkRun(files: string[], dry: boolean): Promise<void> {
   }
 }
 
+async function bulkSetGroup(files: string[], raw: string): Promise<void> {
+  const check = planBulkGroup(files, raw);
+  if (!check.ok) {
+    toast(check.reason, "warn");
+    return;
+  }
+  const { group } = check.plan;
+  S.picked.clear();
+  S.busy = `Moving ${check.plan.files.length} automation${check.plan.files.length === 1 ? "" : "s"} to ${group}`;
+  renderChrome();
+  try {
+    const result = await applyBulkGroup(check.plan.files, group, (file, title, next) =>
+      backend().setMeta(file, title, next),
+    );
+    const outcome = bulkGroupToast(result, group);
+    toast(outcome.msg, outcome.kind);
+  } catch (err) {
+    toast(`Move to group failed — ${errText(err)}`, "err");
+  } finally {
+    S.busy = null;
+    closeModal();
+    render();
+    await refreshJobs();
+  }
+}
+
 function handleBulk(kind: string): void {
   switch (kind) {
     case "clear":
@@ -841,7 +899,7 @@ function handleBulk(kind: string): void {
       openStaggerModal();
       break;
     case "group":
-      toast("Move to group is not available here yet — edit Group on an automation.", "warn");
+      openGroupModal();
       break;
   }
 }
@@ -904,8 +962,8 @@ const CLICKABLE =
   "[data-grpopen],[data-status],[data-groupby],[data-bulk],[data-mode],[data-wday],[data-setevery]," +
   "[data-addtime],[data-deltime],[data-settimeout],[data-settitle],[data-validate],[data-clearf],[data-close]," +
   "[data-confirmdel],[data-confirmdeep],[data-run-confirm],[data-stagger-preview],[data-stagger-apply]," +
-  "[data-retry],[data-theme-set],[data-reindex],[data-prune],[data-set-root],[data-add]," +
-  "[data-newjob-confirm]," +
+  "[data-retry],[data-theme-set],[data-reindex],[data-prune],[data-set-root]," +
+  "[data-add],[data-newjob-confirm],[data-group-apply]," +
   "#btn-add,#btn-add2,#btn-theme,#btn-pal,#btn-refresh,#log-group,#log-flat";
 
 document.addEventListener("click", (e) => {
@@ -970,6 +1028,10 @@ document.addEventListener("click", (e) => {
   }
   if (d.staggerApply !== undefined) {
     void applyStagger();
+    return;
+  }
+  if (d.groupApply !== undefined) {
+    applyGroupModal();
     return;
   }
 
