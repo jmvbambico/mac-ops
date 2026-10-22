@@ -18,7 +18,7 @@ rather than an empty row.
 - **A runner** (`bin/run`, `bin/run-job`) — bash, launchd-scheduled, with a
   per-job timeout that kills the whole process group, so no job can hang
   forever and silence the watchdog.
-- **A console** (`console/`) — a Tauri app to add, schedule, enable, run and
+- **A console** (`console/`) — a Tauri app to schedule, enable, run and
   debug automations: per-job logs, run history, a 24-hour load view that shows
   when your jobs collide, and bulk actions for when there are many.
 - **Examples** (`examples/jobs/`) — real automations to copy: Homebrew
