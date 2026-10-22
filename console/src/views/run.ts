@@ -24,10 +24,16 @@ export interface RunCtx {
   lines: string[];
   /** How many streamed lines have been dropped by the retention cap. */
   dropped: number;
+  /**
+   * Captured command output from `logs/job-<slug>.out.log`, fetched after the
+   * run finishes (the job calls `log_output` near the end). Empty means the
+   * automation has not opted in — normal, not a failure.
+   */
+  output: string;
 }
 
 export function newRunCtx(file: string, dry: boolean): RunCtx {
-  return { file, dry, outcome: null, busy: false, lines: [], dropped: 0 };
+  return { file, dry, outcome: null, busy: false, lines: [], dropped: 0, output: "" };
 }
 
 /**
@@ -68,7 +74,20 @@ export function applyRunLogBatch(ctx: RunCtx, batch: RunLogBatch): boolean {
 }
 
 /**
- * The modal body: streamed log detail first, then the child's own stdout /
+ * Record the captured per-job output fetched after the run completes. Returns
+ * true when the modal needs a repaint. An empty string is a legitimate answer
+ * (the automation has not opted into `log_output`), so it is stored like any
+ * other and simply contributes nothing to the body.
+ */
+export function applyRunOutput(ctx: RunCtx, output: string): boolean {
+  if (ctx.output === output) return false;
+  ctx.output = output;
+  return true;
+}
+
+/**
+ * The modal body: streamed log detail first, then the captured per-job output
+ * (the long report the one-line summaries hide), then the child's own stdout /
  * stderr once the run finishes. The "silent, which is success" fallback is
  * kept only when there genuinely is nothing else to show.
  */
@@ -76,10 +95,11 @@ export function runBody(ctx: RunCtx, job: Job): string {
   const o = ctx.outcome;
   const notice = ctx.dropped > 0 ? truncationNotice(ctx.dropped) : "";
   const logText = [notice, ctx.lines.join("\n")].filter(Boolean).join("\n").trim();
+  const capturedText = ctx.output.trim();
   const outText = o
     ? [o.stdout.trim(), o.stderr.trim()].filter(Boolean).join("\n")
     : "";
-  const body = [logText, outText].filter(Boolean).join("\n");
+  const body = [logText, capturedText, outText].filter(Boolean).join("\n");
   if (body) return esc(body);
 
   if (o) return "(no output on stdout — silent, which is success)";

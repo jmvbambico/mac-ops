@@ -247,6 +247,14 @@ export function fakeBackend(options: { runLog?: FakeRunLogBus } = {}): Backend {
         timed_out: false,
       } satisfies RunOutcome;
     },
+    async jobOutput(file) {
+      const j = find(file);
+      // Mirrors the runner: no file (and therefore "") for a job that has not
+      // run or has not opted into log_output. Otherwise a short stand-in for
+      // the captured report the per-job log holds.
+      if (!j.last) return "";
+      return `== ${j.label} ==\n${j.last.summary}\n`;
+    },
     async subscribeRunLog(onBatch) {
       return runLog ? runLog.subscribe(onBatch) : () => {};
     },

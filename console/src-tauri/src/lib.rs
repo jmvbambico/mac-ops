@@ -306,6 +306,74 @@ async fn validate_job(app: tauri::AppHandle, file: String) -> R<Vec<String>> {
     .await
 }
 
+/// Largest captured-output payload returned to the UI.
+///
+/// The runner's `log_output` caps the file at 256 KiB, so a normal file is
+/// never cut here. This is a guard against a hand-edited, older or foreign
+/// file — not an expected path — and it is reported to the reader rather than
+/// applied silently.
+pub const MAX_JOB_OUTPUT_BYTES: usize = 256 * 1024;
+
+/// Read `logs/job-<slug>.out.log` (written by `log_output` in lib/common.sh).
+///
+/// A missing file is `Ok("")`: a job that never opted into `log_output` is the
+/// ordinary case, and the modal simply falls back to the streamed run log. A
+/// file larger than the cap yields its TAIL — the newest output — behind a
+/// visible truncation notice, because the beginning is the part a reader can
+/// most afford to lose.
+fn read_job_output_file(path: &std::path::Path) -> R<String> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+        Err(err) => return Err(format!("read {}: {err}", path.display())),
+    };
+    let len = file
+        .metadata()
+        .map_err(|err| format!("stat {}: {err}", path.display()))?
+        .len();
+
+    let truncated = len > MAX_JOB_OUTPUT_BYTES as u64;
+    if truncated {
+        file.seek(SeekFrom::End(-(MAX_JOB_OUTPUT_BYTES as i64)))
+            .map_err(|err| format!("seek {}: {err}", path.display()))?;
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|err| format!("read {}: {err}", path.display()))?;
+    // Commands may emit bytes that are not valid UTF-8; lossy beats failing
+    // the whole view over one stray byte.
+    let mut text = String::from_utf8_lossy(&bytes).into_owned();
+
+    if truncated {
+        // Drop the partial first line the byte cut left behind, then say what
+        // was dropped. Silent truncation would read as a job that stopped.
+        if let Some(nl) = text.find('\n') {
+            text.drain(..=nl);
+        }
+        text.insert_str(
+            0,
+            &format!(
+                "… output truncated — showing the last {} KiB of {} KiB; the full file is on disk\n",
+                MAX_JOB_OUTPUT_BYTES / 1024,
+                (len + 1023) / 1024
+            ),
+        );
+    }
+    Ok(text)
+}
+
+/// Captured per-job output for the run modal, fetched AFTER the run finishes:
+/// the job captures command output first and calls `log_output` near the end.
+#[tauri::command]
+async fn read_job_output(app: tauri::AppHandle, file: String) -> R<String> {
+    with_app(app, move |app| {
+        read_job_output_file(&paths::job_output_log(&app.automations_root, &file))
+    })
+    .await
+}
+
 #[tauri::command]
 async fn prune_runs(app: tauri::AppHandle, keep_days: i64) -> R<usize> {
     with_app(app, move |app| app.db.prune(keep_days).map_err(e)).await
@@ -402,7 +470,7 @@ pub fn run() {
             list_jobs, set_enabled, set_schedule, set_timeout, set_meta,
             create_job, delete_job, run_job, runs_for, fleet_history,
             search_logs, load_profile, validate_job, prune_runs, reindex,
-            resolved_paths, set_automations_root
+            resolved_paths, set_automations_root, read_job_output
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -487,5 +555,38 @@ mod tests {
         assert_eq!(job.kind, "sh");
         assert!(job.enabled, "missing state must fail safe toward enabled");
         assert!(job.last.is_none());
+    }
+
+    /// A job that has not opted into `log_output` has no file. That is the
+    /// normal case for the modal, so it must read as "nothing captured" rather
+    /// than an error the UI has to explain.
+    #[test]
+    fn reading_a_missing_job_output_is_empty_not_an_error() {
+        let tmp = Tmp::new("output-missing");
+        let path = paths::job_output_log(&tmp.0, "20-mole-clean.sh");
+        assert_eq!(read_job_output_file(&path).unwrap(), "");
+    }
+
+    /// `log_output` caps the runner's file at 256 KiB, but the console must not
+    /// assume that. A larger file is cut to its newest bytes and the cut is
+    /// NAMED to the reader — a silent cut would look like a job that stopped.
+    #[test]
+    fn large_job_output_is_truncated_visibly() {
+        let tmp = Tmp::new("output-large");
+        std::fs::create_dir_all(tmp.0.join("logs")).unwrap();
+        let path = paths::job_output_log(&tmp.0, "20-mole-clean.sh");
+        let line = "0123456789abcdef\n";
+        let body = line.repeat(MAX_JOB_OUTPUT_BYTES / line.len() + 10);
+        std::fs::write(&path, &body).unwrap();
+
+        let got = read_job_output_file(&path).unwrap();
+        assert!(got.starts_with("… output truncated"), "{:?}", &got[..60.min(got.len())]);
+        assert!(got.contains("the full file is on disk"), "{got}");
+        assert!(got.len() < body.len(), "the cap must actually shrink the payload");
+        assert!(got.ends_with(line), "the newest output must survive");
+        assert!(
+            !got.contains("0123456789abcdef\n… output truncated"),
+            "nothing may be prepended into the tail itself"
+        );
     }
 }

@@ -449,6 +449,17 @@ pub fn run_log(automations_root: &Path) -> PathBuf {
 pub fn runs_jsonl(automations_root: &Path) -> PathBuf {
     automations_root.join("logs/runs.jsonl")
 }
+/// The per-job captured output written by `log_output` in lib/common.sh.
+///
+/// Keyed on the job FILENAME, never on the job's `LABEL`: a filename is unique
+/// by construction, while a label is author-chosen and may repeat. `bin/run-job`
+/// derives exactly the same path, so this must stay byte-for-byte in step with
+/// the runner. A name without a trailing `.sh` is used verbatim rather than
+/// panicking.
+pub fn job_output_log(automations_root: &Path, file: &str) -> PathBuf {
+    let stem = file.strip_suffix(".sh").unwrap_or(file);
+    logs_dir(automations_root).join(format!("job-{stem}.out.log"))
+}
 /// The SQLite index. Derived data only — never the source of truth.
 pub fn db_file(automations_root: &Path) -> PathBuf {
     automations_root.join("state/console.db")
@@ -833,6 +844,26 @@ mod tests {
         for forbidden in ["jobs", "logs", "state"] {
             assert!(!tool.join(forbidden).exists(), "tool root got {forbidden}/");
         }
+    }
+
+    /// The runner and the console must agree on this path EXACTLY: `bin/run-job`
+    /// writes `$AUTOMATIONS_ROOT/logs/job-<filename minus .sh>.out.log`. The
+    /// filename — not the label — is the key, because labels are not unique.
+    /// A disagreement here would silently show one job's output under another.
+    #[test]
+    fn job_output_path_is_keyed_on_the_filename_not_the_label() {
+        let auto = Path::new("/Users/example/.mops");
+        let p = job_output_log(auto, "20-mole-clean.sh");
+        assert!(p.ends_with("logs/job-20-mole-clean.out.log"), "{}", p.display());
+        assert_eq!(
+            p,
+            Path::new("/Users/example/.mops/logs/job-20-mole-clean.out.log")
+        );
+
+        // No trailing `.sh` is still a sane path, never a panic and never a
+        // doubled suffix.
+        let bare = job_output_log(auto, "20-mole-clean");
+        assert!(bare.ends_with("logs/job-20-mole-clean.out.log"), "{}", bare.display());
     }
 
     #[test]
