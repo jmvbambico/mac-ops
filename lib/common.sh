@@ -34,7 +34,7 @@ _COMMON_SH_LOADED=1
 # directory (a checkout used in place) but must never be assumed to be.
 #
 # Precedence, first hit wins:
-#   1. $MOPS_AUTOMATIONS_ROOT (legacy: $MACHINE_OPS_AUTOMATIONS_ROOT)
+#   1. $MOPS_AUTOMATIONS_ROOT
 #   2. automations_root in ~/.config/mops/config.json
 #   3. $HOME/.mops  (the default)
 #
@@ -46,26 +46,12 @@ _COMMON_SH_LOADED=1
 # nothing here may ever write to a nominal run's stdout.
 # ---------------------------------------------------------------------------
 
-# mops_env_value <primary> <legacy> — print the value of the first NON-EMPTY
-# variable of the two names, primary first. Prints nothing and returns 1 when
-# neither is set. This is the READ side of the MOPS_* rename: the new name
-# always wins when both are set.
-#
-# The legacy MACHINE_OPS_* names exist only for compatibility and will be
-# removed once the owner's automations in ~/projects/machine-ops are migrated
-# (expected 0.5.0; the migration, not the version, is the precondition). They
-# are honoured because the owner's own live automations live in a SEPARATE
-# repository that this rename cannot reach; there are no third-party users (the
-# repo has no stars, forks or clones). When those automations are migrated and
-# verified, the legacy reads and exports can go.
+# mops_env_value <name> — print the value of a NON-EMPTY environment variable.
+# Prints nothing and returns 1 when it is unset or empty.
 mops_env_value() {
-    local primary="$1" legacy="$2"
-    if [[ -n "${!primary:-}" ]]; then
-        printf '%s\n' "${!primary}"
-        return 0
-    fi
-    if [[ -n "${!legacy:-}" ]]; then
-        printf '%s\n' "${!legacy}"
+    local name="$1"
+    if [[ -n "${!name:-}" ]]; then
+        printf '%s\n' "${!name}"
         return 0
     fi
     return 1
@@ -78,7 +64,7 @@ machine_ops_config_path() {
 
 machine_ops_automations_root() {
     local _root=""
-    if _root="$(mops_env_value MOPS_AUTOMATIONS_ROOT MACHINE_OPS_AUTOMATIONS_ROOT)"; then
+    if _root="$(mops_env_value MOPS_AUTOMATIONS_ROOT)"; then
         printf '%s\n' "$_root"
         return 0
     fi
@@ -113,21 +99,18 @@ PY
     return 1
 }
 
-# The run log. The dispatcher exports both names with the same value; a job
-# run by hand may have set only one. Resolve the alias once and mirror it so
-# every child process sees both, whichever name it reads.
-if _COMMON_LOG="$(mops_env_value MOPS_LOG MACHINE_OPS_LOG)"; then
+# The run log. The dispatcher exports it; a job run by hand may have set it
+# directly.
+if _COMMON_LOG="$(mops_env_value MOPS_LOG)"; then
     MOPS_LOG="$_COMMON_LOG"
-    MACHINE_OPS_LOG="$_COMMON_LOG"
-    export MOPS_LOG MACHINE_OPS_LOG
+    export MOPS_LOG
 elif _COMMON_AUTOMATIONS_ROOT="$(machine_ops_automations_root)"; then
     # Default log location when the dispatcher has not exported one (e.g. a
     # job run by hand for debugging). It belongs to the AUTOMATIONS root,
     # never to the tool directory.
     _COMMON_LOG="$_COMMON_AUTOMATIONS_ROOT/logs/machine-ops.log"
     MOPS_LOG="$_COMMON_LOG"
-    MACHINE_OPS_LOG="$_COMMON_LOG"
-    export MOPS_LOG MACHINE_OPS_LOG
+    export MOPS_LOG
 fi
 unset _COMMON_AUTOMATIONS_ROOT 2>/dev/null || true
 unset _COMMON_LOG 2>/dev/null || true
@@ -147,40 +130,6 @@ ts() {
 log_line() {
     [[ -n "${MOPS_LOG:-}" ]] || return 0
     printf '%s %s\n' "$(ts)" "$*" >> "$MOPS_LOG" 2>/dev/null || true
-}
-
-# warn_legacy_dry_run <job-file> <context> — log ONE migration note when a job
-# still reads the legacy MACHINE_OPS_DRY_RUN and not MOPS_DRY_RUN. Returns 0
-# when it logged, 1 otherwise (no note is a normal, silent outcome).
-#
-# The note goes to the RUN LOG only, never to stdout: stdout is the alert
-# channel and a nominal run must stay silent (Principle I). Because both
-# names are exported with the same value, the job still works correctly at
-# runtime; this is a migration record, not an alert. Callers that run many
-# jobs must gate this on their own once-per-run flag.
-#
-# The match is LEXICAL, not a real read detector: it misses non-`$` reads such
-# as `printenv MACHINE_OPS_DRY_RUN` or `os.environ["MACHINE_OPS_DRY_RUN"]` in a
-# quoted heredoc, and can match a comment containing a literal expression.
-# Safety comes from exporting BOTH names unconditionally. So when the alias is
-# removed (once the owner's automations in ~/projects/machine-ops are migrated
-# and verified; expected 0.5.0), the absence of notes here is NOT evidence that
-# nothing reads the legacy name: the precondition is that the owner's
-# automations have been migrated and verified directly.
-warn_legacy_dry_run() {
-    local file="$1" context="${2:-job}"
-    [[ -f "$file" ]] || return 1
-    # Match an actual variable EXPANSION, not a prose mention: the `$` sigil is
-    # required, so `${MACHINE_OPS_DRY_RUN:-0}` and `$MACHINE_OPS_DRY_RUN` count
-    # while a bare comment mention does not. The "already migrated" check uses
-    # the same shape; MOPS_DRY_RUN cannot satisfy it via the legacy name
-    # because the sigil must sit immediately before MOPS (not after MACHINE_).
-    if grep -Eq '\$[{]?MACHINE_OPS_DRY_RUN([^A-Za-z0-9_]|$)' "$file" 2>/dev/null \
-        && ! grep -Eq '\$[{]?MOPS_DRY_RUN([^A-Za-z0-9_]|$)' "$file" 2>/dev/null; then
-        log_line "${context} reads deprecated MACHINE_OPS_DRY_RUN; migrate to MOPS_DRY_RUN (legacy alias kept until the owner's automations in ~/projects/machine-ops are migrated; expected 0.5.0)"
-        return 0
-    fi
-    return 1
 }
 
 # Alert queue. Buffer in a variable so a job decides ONCE, at the end,
@@ -249,15 +198,14 @@ strip_ansi() {
 #
 # Captured stdout is capped: the alert channel is short by contract, and the
 # full text is already in the run log and the per-job launchd log.
-# Read-side alias, same precedence as the rest: MOPS_* wins, legacy falls back.
-MOPS_RUN_STDOUT_CAP="${MOPS_RUN_STDOUT_CAP:-${MACHINE_OPS_RUN_STDOUT_CAP:-8192}}"
+MOPS_RUN_STDOUT_CAP="${MOPS_RUN_STDOUT_CAP:-8192}"
 
 # record_run <job> <started_epoch> <duration_s> <rc> <timed_out> <dry_run> <stdout_file>
 # Best-effort: never fails the caller, never prints to stdout (that channel
 # belongs to alerts alone).
 record_run() {
     [[ -n "${MOPS_LOG:-}" ]] || return 0
-    local runs_file="${MOPS_RUNS:-${MACHINE_OPS_RUNS:-$(dirname "$MOPS_LOG")/runs.jsonl}}"
+    local runs_file="${MOPS_RUNS:-$(dirname "$MOPS_LOG")/runs.jsonl}"
     /usr/bin/python3 - "$@" "$MOPS_RUN_STDOUT_CAP" >> "$runs_file" 2>/dev/null <<'PY' || true
 import json, sys
 

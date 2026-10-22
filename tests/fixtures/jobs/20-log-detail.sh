@@ -11,7 +11,7 @@
 
 set -u
 
-TOOL_ROOT="${MOPS_TOOL_ROOT:-${MACHINE_OPS_TOOL_ROOT:?MOPS_TOOL_ROOT must point at the checkout under test}}"
+TOOL_ROOT="${MOPS_TOOL_ROOT:?MOPS_TOOL_ROOT must point at the checkout under test}"
 # shellcheck disable=SC1091 # tool root is resolved at runtime, not at parse time
 source "$TOOL_ROOT/lib/common.sh"
 

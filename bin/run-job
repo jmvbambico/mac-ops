@@ -42,11 +42,6 @@ usage() {
 # the user's data directory and is resolved separately below.
 TOOL_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export MOPS_TOOL_ROOT="$TOOL_ROOT"
-# Legacy alias, same value until the owner's automations in
-# ~/projects/machine-ops are migrated (expected 0.5.0). The owner's separate
-# automations repo still reads MACHINE_OPS_*; this rename cannot reach those
-# scripts.
-export MACHINE_OPS_TOOL_ROOT="$TOOL_ROOT"
 
 # Per-job wall-clock timeout, matching bin/run's default. A job may override
 # it with "# timeout: <secs>" on line 3.
@@ -65,20 +60,15 @@ if ! AUTOMATIONS_ROOT="$(machine_ops_automations_root)"; then
     exit 1
 fi
 export MOPS_AUTOMATIONS_ROOT="$AUTOMATIONS_ROOT"
-# Legacy alias, same value until the owner's automations in
-# ~/projects/machine-ops are migrated (see TOOL_ROOT above).
-export MACHINE_OPS_AUTOMATIONS_ROOT="$AUTOMATIONS_ROOT"
 LOG_DIR="$AUTOMATIONS_ROOT/logs"
 LOG_FILE="$LOG_DIR/machine-ops.log"
 export MOPS_LOG="$LOG_FILE"
-export MACHINE_OPS_LOG="$LOG_FILE"
 
 # A job launched from the console inherits MOPS_DRY_RUN; launchd may supply
-# neither. Resolve the alias once and export BOTH names with the same value,
-# so a legacy job can never see the flag unset and default to apply mode.
-DRY_RUN="$(mops_env_value MOPS_DRY_RUN MACHINE_OPS_DRY_RUN || printf '0')"
+# no flag at all. Default to 0 (apply) and export an explicit value so a job
+# never sees the flag unset.
+DRY_RUN="${MOPS_DRY_RUN:-0}"
 export MOPS_DRY_RUN="$DRY_RUN"
-export MACHINE_OPS_DRY_RUN="$DRY_RUN"
 
 if (( $# != 1 )); then
     usage
@@ -167,9 +157,6 @@ job_still_ours() {
     _cur="$(ps -o pgid= -p "$_pid" 2>/dev/null | tr -d '[:space:]' || true)"
     [[ -n "$_cur" && "$_cur" == "$_pgid" ]]
 }
-
-# Log-only migration note (never stdout), at most once for this one job.
-warn_legacy_dry_run "$job_file" "[run-job] job $job_name" || true
 
 run_started_epoch="$(date +%s)"
 log_line "[run-job] start job=$job_name tier=${job_tier:-unknown} timeout=${job_timeout}s"
@@ -284,7 +271,7 @@ log_line "[run-job] finish job=$job_name rc=$job_rc timeout=$job_timed_out tier=
 # Structured record for the console's index. Best-effort by construction:
 # record_run never fails the caller and never writes to stdout.
 record_run "$job_name" "$run_started_epoch" "$elapsed" "$job_rc" \
-    "$job_timed_out" "${MOPS_DRY_RUN:-${MACHINE_OPS_DRY_RUN:-0}}" "$out_file"
+    "$job_timed_out" "$DRY_RUN" "$out_file"
 
 # Captured job stdout is already the alert channel (the job's flush_alerts
 # output); re-emit it under the job's label. A crashed or timed-out job that

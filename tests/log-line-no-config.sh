@@ -2,11 +2,11 @@
 #
 # tests/log-line-no-config.sh — regression for lib/common.sh's log_line.
 #
-# A job can source common.sh with HOME unset and neither MOPS_LOG nor
-# MACHINE_OPS_LOG configured. The old "${MOPS_LOG:?}" aborted a non-interactive
-# shell during word expansion, before `|| true` or a redirection could help —
-# killing the job at its first log_line. log_line must instead be a silent
-# no-op: caller survives, stdout stays empty.
+# A job can source common.sh with HOME unset and no MOPS_LOG configured. The
+# old "${MOPS_LOG:?}" aborted a non-interactive shell during word expansion,
+# before `|| true` or a redirection could help — killing the job at its first
+# log_line. log_line must instead be a silent no-op: caller survives, stdout
+# stays empty.
 #
 # Run standalone, or via tests/silent-contract.sh (the gate).
 
@@ -38,7 +38,7 @@ OUT="$WORK/out"
 ERR="$WORK/err"
 RC=0
 (
-    env -u HOME -u MOPS_LOG -u MACHINE_OPS_LOG \
+    env -u HOME -u MOPS_LOG \
         bash "$PROBE" "$TOOL_ROOT"
 ) >"$OUT" 2>"$ERR" || RC=$?
 
@@ -58,4 +58,28 @@ if ! grep -q 'SURVIVED' "$ERR"; then
     exit 1
 fi
 
-printf 'log-line-no-config: ok — log_line is a silent no-op with no log configured.\n'
+# The legacy name is no longer honoured: with HOME unset, no MOPS_LOG, and
+# only MACHINE_OPS_LOG set, common.sh must not adopt that path. The probe stays
+# a silent no-op and the legacy log file is never created.
+LEGACY_LOG="$WORK/legacy.log"
+RC=0
+(
+    env -u HOME -u MOPS_LOG MACHINE_OPS_LOG="$LEGACY_LOG" \
+        bash "$PROBE" "$TOOL_ROOT"
+) >"$OUT" 2>"$ERR" || RC=$?
+if (( RC != 0 )); then
+    printf 'log-line-no-config: FAIL: subshell exited %d with a legacy log name set\n' "$RC" >&2
+    cat "$ERR" >&2
+    exit 1
+fi
+if [[ -s "$OUT" ]]; then
+    printf 'log-line-no-config: FAIL: a legacy log name wrote to stdout:\n' >&2
+    cat "$OUT" >&2
+    exit 1
+fi
+if [[ -e "$LEGACY_LOG" ]]; then
+    printf 'log-line-no-config: FAIL: MACHINE_OPS_LOG was still honoured (%s created)\n' "$LEGACY_LOG" >&2
+    exit 1
+fi
+
+printf 'log-line-no-config: ok — log_line is a silent no-op with no log configured, and the legacy log name is ignored.\n'
