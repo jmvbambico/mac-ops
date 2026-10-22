@@ -1118,6 +1118,77 @@ this line is not a log line at all
         assert_eq!(brew.summary, "boom");
     }
 
+    /// Guards the `ON CONFLICT (job, started_at) DO UPDATE` clause that the
+    /// feed-is-primary contract rests on. Production ingests the text log
+    /// first and the feed second, so the feed only wins because the upsert is
+    /// genuinely last-write-wins. If that clause ever became
+    /// `DO NOTHING` / `OR IGNORE`, every other test would still pass while
+    /// the text log silently started winning — the exact inversion this
+    /// branch exists to prevent. Hence both orderings are asserted here:
+    /// the precedence must come from call order, not from the upsert.
+    #[test]
+    fn the_feed_wins_over_the_text_log_on_the_same_key() {
+        const JOB: &str = "60-precedence.sh";
+        let t = Tmp::new("precedence");
+        let log = t.path("machine-ops.log");
+        let runs = t.path("runs.jsonl");
+        std::fs::write(
+            &log,
+            "2026-10-21 05:00:00 [run-job] start job=60-precedence.sh tier=daily timeout=900s\n\
+             2026-10-21 05:00:04 [precedence] log-side summary rc=3 dry_run=0\n\
+             2026-10-21 05:00:05 [run-job] finish job=60-precedence.sh rc=3 timeout=0 tier=daily elapsed=5s\n",
+        )
+        .unwrap();
+
+        // Production order: text log first, feed second.
+        let db = t.db();
+        db.ingest_log(&log).unwrap();
+        // Prove the crafted line actually parsed before relying on the key,
+        // so a silently skipped line cannot make this test vacuous.
+        let from_log = db.last_run(JOB).unwrap().unwrap();
+        assert_eq!(from_log.rc, 3);
+        assert_eq!(from_log.status, Status::Fail);
+        assert_eq!(from_log.duration_s, 5);
+        assert_eq!(from_log.summary, "log-side summary rc=3 dry_run=0");
+
+        // Same (job, started_at) key, deliberately different values.
+        std::fs::write(
+            &runs,
+            format!(
+                "{{\"job\": \"{JOB}\", \"started_at\": {}, \"duration_s\": 42, \"rc\": 0, \"status\": \"quiet\", \"dry_run\": false, \"summary\": \"feed-side summary\", \"stdout\": \"\"}}\n",
+                from_log.started_at
+            ),
+        )
+        .unwrap();
+        db.ingest_runs_jsonl(&runs).unwrap();
+
+        let row = db.last_run(JOB).unwrap().unwrap();
+        assert_eq!(row.started_at, from_log.started_at, "both records share the key");
+        assert_eq!(row.rc, 0, "feed rc must win");
+        assert_eq!(row.status, Status::Quiet, "feed status must win");
+        assert_eq!(row.duration_s, 42, "feed duration must win");
+        assert_eq!(row.summary, "feed-side summary", "feed summary must win");
+
+        // Reverse order in a fresh database: last write wins in either
+        // direction, which is what makes the production ordering (not a
+        // hard-coded precedence) the thing that keeps the feed primary.
+        let t2 = Tmp::new("precedence-reverse");
+        let db2 = t2.db();
+        let log2 = t2.path("machine-ops.log");
+        let runs2 = t2.path("runs.jsonl");
+        std::fs::copy(&log, &log2).unwrap();
+        std::fs::copy(&runs, &runs2).unwrap();
+        db2.ingest_runs_jsonl(&runs2).unwrap();
+        db2.ingest_log(&log2).unwrap();
+
+        let row2 = db2.last_run(JOB).unwrap().unwrap();
+        assert_eq!(row2.started_at, from_log.started_at);
+        assert_eq!(row2.rc, 3, "with reversed order the text log must win");
+        assert_eq!(row2.status, Status::Fail);
+        assert_eq!(row2.duration_s, 5);
+        assert_eq!(row2.summary, "log-side summary rc=3 dry_run=0");
+    }
+
     #[test]
     fn prune_is_per_job_and_keeps_the_latest() {
         let t = Tmp::new("prune");
