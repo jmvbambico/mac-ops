@@ -322,7 +322,6 @@ export function primeView(): void {
   if (S.view === "overview") void loadFleet();
   if (S.view === "schedule") void loadProfile();
   if (S.view === "logs") void loadLogs(S.logQuery);
-  if (S.view === "settings") void loadPaths();
   if (S.view === "detail" && S.selected) {
     S.detailRuns = idle<Run[]>();
     void loadDetailRuns(S.selected);

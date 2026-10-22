@@ -9,6 +9,8 @@
  */
 import { backend, errText, setBackend } from "./api";
 import type { Unsubscribe } from "./api";
+import { bulkRun, bulkSetEnabled, bulkSetGroup } from "./bulkActions";
+import type { BulkPaint } from "./bulkActions";
 import { closeLayer, inputValue, numberValue, setLayer, $ } from "./dom";
 import { fakeBackend } from "./fake";
 import {
@@ -59,7 +61,7 @@ import type { Job, Schedule, ScheduleMode, Status } from "./types";
 import { STATUS_META, statusOf } from "./types";
 import { skeletonRows } from "./views/common";
 import { vDetail } from "./views/detail";
-import { GroupCtx, applyBulkGroup, bulkGroupToast, planBulkGroup, vGroupModal } from "./views/group";
+import { GroupCtx, planBulkGroup, vGroupModal } from "./views/group";
 import { vJobs } from "./views/jobs";
 import { vLogs } from "./views/logs";
 import { NewJobForm, defaultForm, submitNewJob, vNewJob } from "./views/newjob";
@@ -745,7 +747,7 @@ function applyGroupModal(): void {
     toast(check.reason, "warn");
     return;
   }
-  void bulkSetGroup(check.plan.files, check.plan.group);
+  void bulkSetGroup(check.plan.files, check.plan.group, bulkPaint);
 }
 
 /* ------------------------------- actions ------------------------------- */
@@ -787,74 +789,7 @@ function toggleTheme(): void {
   applyTheme(effectiveTheme() === "dark" ? "light" : "dark");
 }
 
-async function bulkSetEnabled(files: string[], enabled: boolean): Promise<void> {
-  if (!files.length) {
-    toast("Select automations first", "warn");
-    return;
-  }
-  S.picked.clear();
-  await mutate(
-    `${enabled ? "Enabled" : "Disabled"} ${files.length} automation${files.length === 1 ? "" : "s"}`,
-    () => Promise.all(files.map((f) => backend().setEnabled(f, enabled))),
-  );
-  render();
-}
-
-async function bulkRun(files: string[], dry: boolean): Promise<void> {
-  if (!files.length) {
-    toast("Select automations first", "warn");
-    return;
-  }
-  S.busy = `${dry ? "Dry-running" : "Running"} ${files.length} automation${files.length === 1 ? "" : "s"}`;
-  renderChrome();
-  let done = 0;
-  let spoke = 0;
-  try {
-    for (const file of files) {
-      const o = await backend().runJob(file, dry);
-      done += 1;
-      if (o.status !== "quiet" && o.status !== "off") spoke += 1;
-    }
-    toast(
-      `${dry ? "Dry ran" : "Ran"} ${done} automation${done === 1 ? "" : "s"}${
-        spoke ? ` · ${spoke} spoke` : " · all quiet"
-      }`,
-      spoke ? "warn" : "ok",
-    );
-    S.picked.clear();
-  } catch (err) {
-    toast(`${dry ? "Dry run" : "Run"} failed — ${errText(err)}`, "err");
-  } finally {
-    S.busy = null;
-    await refreshJobs();
-  }
-}
-
-async function bulkSetGroup(files: string[], raw: string): Promise<void> {
-  const check = planBulkGroup(files, raw);
-  if (!check.ok) {
-    toast(check.reason, "warn");
-    return;
-  }
-  const { group } = check.plan;
-  S.picked.clear();
-  S.busy = `Moving ${check.plan.files.length} automation${check.plan.files.length === 1 ? "" : "s"} to ${group}`;
-  renderChrome();
-  try {
-    const result = await applyBulkGroup(check.plan.files, group, (file, title, next) =>
-      backend().setMeta(file, title, next),
-    );
-    const outcome = bulkGroupToast(result, group);
-    toast(outcome.msg, outcome.kind);
-  } catch (err) {
-    toast(`Move to group failed — ${errText(err)}`, "err");
-  } finally {
-    S.busy = null;
-    closeModal();
-    render();
-    await refreshJobs();
-  }
-}
+const bulkPaint: BulkPaint = { view: render, chrome: renderChrome, groupDone: closeModal };
 
 function handleBulk(kind: string): void {
   switch (kind) {
@@ -863,13 +798,13 @@ function handleBulk(kind: string): void {
       render();
       break;
     case "enable":
-      void bulkSetEnabled([...S.picked], true);
+      void bulkSetEnabled([...S.picked], true, bulkPaint);
       break;
     case "disable":
-      void bulkSetEnabled([...S.picked], false);
+      void bulkSetEnabled([...S.picked], false, bulkPaint);
       break;
     case "run":
-      void bulkRun([...S.picked], false);
+      void bulkRun([...S.picked], false, bulkPaint);
       break;
     case "stagger":
       openStaggerModal();
@@ -1287,6 +1222,11 @@ function boot(): void {
 
   onChange(render);
   render();
+
+  // Resolved paths are decoration for most views: kick the lookup off after
+  // the initial render and never await it. A failure leaves S.paths empty and
+  // the top bar keeps its "MacOps" fallback instead of raising an error.
+  void loadPaths();
 
   void refreshJobs().then((data) => {
     if (data) primeView();

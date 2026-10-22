@@ -62,6 +62,12 @@ export function vOverview(): string {
   const sweep = enabled.reduce((a, j) => a + lastDuration(j), 0);
   const groups = groupsOf(all);
   const running = all.filter((j) => S.running.has(j.file));
+  // The resolved automations root, not the tool's install root, and only once
+  // the background lookup has answered — until then keep the old default.
+  const automationsRoot = S.paths.data?.automations_root.trim();
+  const rootHint = automationsRoot
+    ? `<span class="mono">${esc(automationsRoot)}</span>, changeable in Settings`
+    : `<span class="mono">~/.mops</span> by default, changeable in Settings`;
 
   const attnRow = (j: Job, i: number): string => `
     <div class="row" style="padding:10px 13px;${i ? "border-top:.5px solid var(--line-soft)" : ""};cursor:pointer"
@@ -92,8 +98,7 @@ export function vOverview(): string {
           <span class="muted">${IC.jobs}</span>
           <div class="t">No automations on disk</div>
           <div class="muted" style="font-size:12px">MacOps reads <span class="mono">jobs/*.sh</span> from your
-            automations root (<span class="mono">~/.mops</span> by default, changeable in Settings). Add one
-            and it appears here.</div>
+            automations root (${rootHint}). Add one and it appears here.</div>
           <button class="btn pri" data-add>${IC.plus} New automation</button>
         </div>`
       : ""

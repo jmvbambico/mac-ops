@@ -6,7 +6,8 @@
  * failure does not hide the rest. The controller (main.ts) owns the toast,
  * the busy state and the fleet refresh.
  */
-import { errText } from "../api";
+import { applyBulk } from "../bulk";
+import type { BulkFailure } from "../bulk";
 import { esc } from "../format";
 import { IC } from "../icons";
 
@@ -57,10 +58,7 @@ export function planBulkGroup(files: readonly string[], raw: string): BulkGroupC
   return { ok: true, plan: { files: [...files], group } };
 }
 
-export interface BulkGroupFailure {
-  file: string;
-  error: string;
-}
+export type BulkGroupFailure = BulkFailure;
 
 export interface BulkGroupResult {
   moved: string[];
@@ -76,17 +74,8 @@ export async function applyBulkGroup(
   group: string,
   setMeta: (file: string, title: string | null, group: string | null) => Promise<unknown>,
 ): Promise<BulkGroupResult> {
-  const moved: string[] = [];
-  const failed: BulkGroupFailure[] = [];
-  for (const file of files) {
-    try {
-      await setMeta(file, null, group);
-      moved.push(file);
-    } catch (err) {
-      failed.push({ file, error: errText(err) });
-    }
-  }
-  return { moved, failed };
+  const result = await applyBulk(files, (file) => setMeta(file, null, group));
+  return { moved: result.done.map((d) => d.file), failed: result.failed };
 }
 
 /** The one place that decides whether a bulk move is a success or an error. */
