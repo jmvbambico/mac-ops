@@ -457,6 +457,7 @@ else
     RC=$?
 fi
 CLEAN="$(printf '%s\n' "$OUT" | strip_ansi)"
+log_output "$CLEAN"
 ACTIONS="$(printf '%s\n' "$CLEAN" | grep -c -E '^ +(->|=>|.) ' || true)"
 
 log_line "[$LABEL] mole {sub} rc=$RC actions=$ACTIONS dry_run=$DRY"
@@ -652,6 +653,7 @@ if [[ "$DRY" == "1" ]]; then
 else
     REFRESH_OUT="$(pkg_refresh)"
     REFRESH_RC=$?
+    log_output "$REFRESH_OUT"
     if [[ "$REFRESH_RC" != "0" ]]; then
         alert "[$LABEL] index refresh exited rc=$REFRESH_RC (dry_run=$DRY)"
         alert "$(printf '%s\n' "$REFRESH_OUT" | strip_ansi | tail -n 10)"
@@ -663,6 +665,7 @@ fi
 
 LIST_RAW="$(pkg_list)"
 LIST_RC=$?
+log_output "$LIST_RAW"
 LIST_CLEAN="$(printf '%s\n' "$LIST_RAW" | strip_ansi)"
 if [[ "$LIST_RC" != "0" ]]; then
     alert "[$LABEL] outdated query exited rc=$LIST_RC (dry_run=$DRY)"
@@ -705,6 +708,7 @@ fi
 log_line "[$LABEL] upgrade argv names: ${ITEMS[*]}"
 UP_OUT="$(pkg_upgrade "${ITEMS[@]}")"
 UP_RC=$?
+log_output "$UP_OUT"
 UP_CLEAN="$(printf '%s\n' "$UP_OUT" | strip_ansi)"
 if [[ "$UP_RC" != "0" ]]; then
     alert "[$LABEL] upgrade exited rc=$UP_RC (dry_run=$DRY)"
@@ -732,6 +736,7 @@ fi
 
 UP_OUT="$(pkg_upgrade)"
 UP_RC=$?
+log_output "$UP_OUT"
 UP_CLEAN="$(printf '%s\n' "$UP_OUT" | strip_ansi)"
 log_line "[$LABEL] upgrade rc=$UP_RC items_before=$ITEM_COUNT dry_run=$DRY"
 if [[ "$UP_RC" != "0" ]]; then
@@ -865,6 +870,7 @@ else
         fi
         VENV_OUT="$("$PYTHON" -m venv "$VENV_DIR" < /dev/null 2>&1)"
         VENV_RC=$?
+        log_output "$VENV_OUT"
         if [[ "$VENV_RC" != "0" || ! -x "$VENV_PY" ]]; then
             alert "[$LABEL] venv creation failed rc=$VENV_RC at $VENV_DIR"
             alert "$(printf '%s\n' "$VENV_OUT" | strip_ansi | tail -n 10)"
@@ -880,6 +886,7 @@ else
     if (( NEED_INSTALL == 1 )); then
         PIP_OUT="$("$VENV_PY" -m pip install --disable-pip-version-check --quiet -r "$REQ_FILE" < /dev/null 2>&1)"
         PIP_RC=$?
+        log_output "$PIP_OUT"
         if [[ "$PIP_RC" != "0" ]]; then
             alert "[$LABEL] pip install -r $REQ_FILE exited rc=$PIP_RC"
             alert "$(printf '%s\n' "$PIP_OUT" | strip_ansi | tail -n 10)"
@@ -904,6 +911,7 @@ fi
 export MOPS_DRY_RUN="$DRY"
 RUN_OUT="$("$VENV_PY" "$PY_SCRIPT" < /dev/null 2>&1)"
 RUN_RC=$?
+log_output "$RUN_OUT"
 RUN_CLEAN="$(printf '%s\n' "$RUN_OUT" | strip_ansi)"
 
 log_line "[$LABEL] script=$PY_SCRIPT rc=$RUN_RC dry_run=$DRY"
@@ -964,6 +972,7 @@ else
     RC=$?
 fi
 CLEAN="$(printf '%s\n' "$OUT" | strip_ansi)"
+log_output "$CLEAN"
 
 # Always one line in the run log, silent or not.
 log_line "[$LABEL] rc=$RC dry_run=$DRY summary=$(printf '%s' "$CLEAN" | head -n 1)"
@@ -1607,6 +1616,11 @@ mod tests {
             assert!(text.contains("< /dev/null"), "{}", why("stdin redirect"));
             assert!(text.contains("log_line "), "{}", why("log_line summary"));
             assert!(text.contains("alert "), "{}", why("alert"));
+            // Captured command output must reach the per-job output file, so a
+            // newly created automation is visible in the console beyond its
+            // one-line summaries. `log_output` writes a file, never stdout, so
+            // this does not weaken silence.
+            assert!(text.contains("log_output "), "{}", why("log_output opt-in"));
             assert!(
                 text.trim_end().ends_with("flush_alerts \"$LABEL\"\nexit 0"),
                 "{}",

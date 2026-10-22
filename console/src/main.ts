@@ -69,7 +69,7 @@ import { vOverview } from "./views/overview";
 import { vSchedule } from "./views/schedule";
 import { StaggerCtx, vStagger } from "./views/stagger";
 import { vSettings } from "./views/settings";
-import { applyRunLogBatch, newRunCtx, vRunModal } from "./views/run";
+import { applyRunLogBatch, applyRunOutput, newRunCtx, vRunModal } from "./views/run";
 import type { RunCtx } from "./views/run";
 
 /* ------------------------------- chrome ------------------------------- */
@@ -452,6 +452,15 @@ async function confirmRun(): Promise<void> {
   try {
     const o = await backend().runJob(ctx.file, ctx.dry);
     ctx.outcome = o;
+    // The captured per-job output is written near the END of a run (the job
+    // captures output, then calls log_output), so read it only now that the
+    // child has exited. Best-effort: a missing or odd file must never turn a
+    // completed run into an error, and the streamed log above still stands.
+    try {
+      applyRunOutput(ctx, await backend().jobOutput(ctx.file));
+    } catch {
+      /* keep the stream and the outcome */
+    }
     const spoke = o.status !== "quiet" && o.status !== "off";
     toast(
       `${ctx.dry ? "Dry run" : "Run"} ${ctx.file} — ${o.timed_out ? "timed out" : STATUS_META[o.status].t}`,
