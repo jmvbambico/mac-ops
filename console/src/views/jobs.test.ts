@@ -14,6 +14,7 @@ beforeEach(async () => {
   S.q = "";
   S.statusF = new Set();
   S.picked = new Set();
+  S.running = new Set();
   S.groupFilter = null;
   S.savedView = "all";
   S.groupBy = "group";
@@ -91,5 +92,23 @@ describe("vJobs — escaping", () => {
     const html = vJobs();
     expect(html).not.toContain('a"b<c.sh');
     expect(html).toContain("&quot;");
+  });
+});
+
+describe("vJobs — which automation is running", () => {
+  it("marks exactly the running automation's row", () => {
+    S.jobs = { data: fleet, error: null, loading: false };
+    S.running = new Set([fleet[3].file]);
+    const html = vJobs();
+    expect(count(html, 'data-running="1"')).toBe(1);
+    expect(html).toContain('<span class="badge running">');
+    expect(html).toContain("Running");
+  });
+
+  it("renders no running marker once the run is cleared", () => {
+    S.jobs = { data: fleet, error: null, loading: false };
+    S.running = new Set();
+    expect(count(vJobs(), 'data-running="1"')).toBe(0);
+    expect(vJobs()).not.toContain('<span class="badge running">');
   });
 });

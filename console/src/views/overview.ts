@@ -61,15 +61,20 @@ export function vOverview(): string {
     .slice(0, 5);
   const sweep = enabled.reduce((a, j) => a + lastDuration(j), 0);
   const groups = groupsOf(all);
+  const running = all.filter((j) => S.running.has(j.file));
 
   const attnRow = (j: Job, i: number): string => `
     <div class="row" style="padding:10px 13px;${i ? "border-top:.5px solid var(--line-soft)" : ""};cursor:pointer"
          data-open="${esc(j.file)}">
-      <span class="dot ${statusOf(j)}"></span>
+      <span class="dot ${S.running.has(j.file) ? "running" : statusOf(j)}"></span>
       <div class="col" style="gap:1px;min-width:0;flex:1 1 auto">
         <div class="row" style="gap:7px">
           <span style="font-weight:600;font-size:12.5px">${esc(j.title)}</span>
-          <span class="badge ${statusOf(j)}">${STATUS_META[statusOf(j)].t}</span>
+          ${
+            S.running.has(j.file)
+              ? `<span class="badge running"><span class="spin">${IC.refresh}</span>Running</span>`
+              : `<span class="badge ${statusOf(j)}">${STATUS_META[statusOf(j)].t}</span>`
+          }
           <span class="muted" style="font-size:11px">${esc(j.group)}</span>
         </div>
         <div class="mono dim trunc" style="font-size:11px">${esc(j.last?.summary ?? "")}</div>
@@ -90,6 +95,21 @@ export function vOverview(): string {
             automations root (<span class="mono">~/.mops</span> by default, changeable in Settings). Add one
             and it appears here.</div>
           <button class="btn pri" data-add>${IC.plus} New automation</button>
+        </div>`
+      : ""
+  }
+  ${
+    running.length
+      ? `<div class="banner ok" data-running-strip="1">
+          <span style="color:var(--accent)"><span class="spin">${IC.refresh}</span></span>
+          <div class="col" style="gap:1px">
+            <div class="ttl ok">${
+              running.length === 1 ? "1 automation running" : `${running.length} automations running`
+            }</div>
+            <div class="ds">${running
+              .map((j) => `<span class="mono">${esc(j.file)}</span>`)
+              .join(" · ")}</div>
+          </div>
         </div>`
       : ""
   }
@@ -173,8 +193,9 @@ export function vOverview(): string {
               (j, i) => `
       <div class="row" style="padding:9px 13px;${i ? "border-top:.5px solid var(--line-soft)" : ""};cursor:pointer"
            data-open="${esc(j.file)}">
-        <span class="dot ${statusOf(j)}"></span>
+        <span class="dot ${S.running.has(j.file) ? "running" : statusOf(j)}"></span>
         <span style="font-size:12.5px;font-weight:500;min-width:0" class="trunc">${esc(j.title)}</span>
+        ${S.running.has(j.file) ? '<span class="badge running">Running</span>' : ""}
         <span class="muted" style="font-size:11px">${esc(j.group)}</span>
         <span class="muted mono" style="font-size:11px;margin-left:auto">${esc(schedText(j))}</span>
         <span style="font-size:11.5px;font-weight:600;min-width:72px;text-align:right">${untilStr(

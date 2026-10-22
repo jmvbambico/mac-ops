@@ -10,7 +10,8 @@
  * still `todo!()`; see `fakeBackend` in fake.ts).
  */
 import { invoke } from "@tauri-apps/api/core";
-import type { DayStat, Job, NewJob, Run, RunOutcome, Schedule } from "./types";
+import { listen } from "@tauri-apps/api/event";
+import type { DayStat, Job, NewJob, Run, RunLogBatch, RunOutcome, Schedule } from "./types";
 
 export type PathSource = "env" | "config" | "default";
 
@@ -62,6 +63,9 @@ export function parseResolvedPaths(raw: unknown): ResolvedPathsInfo {
   };
 }
 
+/** Stop a live run-log subscription. */
+export type Unsubscribe = () => void;
+
 export interface Backend {
   listJobs(): Promise<Job[]>;
   resolvedPaths(): Promise<ResolvedPathsInfo>;
@@ -74,6 +78,12 @@ export interface Backend {
   createJob(spec: NewJob): Promise<string>;
   deleteJob(file: string, keepScript: boolean): Promise<void>;
   runJob(file: string, dry: boolean): Promise<RunOutcome>;
+  /**
+   * Subscribe to the lines an on-demand run appends to the shared run log.
+   * Resolves to an unsubscribe function. Streaming is best-effort: a failure
+   * to subscribe must never fail the run itself.
+   */
+  subscribeRunLog(onBatch: (batch: RunLogBatch) => void): Promise<Unsubscribe>;
   runsFor(file: string, limit: number): Promise<Run[]>;
   fleetHistory(days: number): Promise<DayStat[]>;
   searchLogs(q: string, limit: number): Promise<Run[]>;
@@ -100,6 +110,13 @@ export const tauriBackend: Backend = {
   createJob: (spec) => invoke<string>("create_job", { spec }),
   deleteJob: (file, keepScript) => invoke<void>("delete_job", { file, keepScript }),
   runJob: (file, dry) => invoke<RunOutcome>("run_job", { file, dry }),
+  subscribeRunLog: (onBatch) =>
+    listen<RunLogBatch>("run-log", (event) => {
+      const payload = event.payload;
+      if (payload && typeof payload.job === "string" && Array.isArray(payload.lines)) {
+        onBatch(payload);
+      }
+    }),
   runsFor: (file, limit) => invoke<Run[]>("runs_for", { file, limit }),
   fleetHistory: (days) => invoke<DayStat[]>("fleet_history", { days }),
   searchLogs: (q, limit) => invoke<Run[]>("search_logs", { q, limit }),

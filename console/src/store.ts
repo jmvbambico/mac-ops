@@ -83,6 +83,13 @@ export const S = {
   logQuery: "",
   logGroup: true,
 
+  /**
+   * Automations with an on-demand run in flight. S.busy names the action for
+   * the status bar; this set is what lets a row say WHICH automation is
+   * running. Cleared as each run settles.
+   */
+  running: new Set<string>(),
+
   // chrome
   palOpen: false,
   palQ: "",

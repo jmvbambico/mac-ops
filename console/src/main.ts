@@ -8,6 +8,7 @@
  * to store.ts or api.ts here.
  */
 import { backend, errText, setBackend } from "./api";
+import type { Unsubscribe } from "./api";
 import { closeLayer, inputValue, numberValue, setLayer, $ } from "./dom";
 import { fakeBackend } from "./fake";
 import {
@@ -54,7 +55,7 @@ import {
   visible,
 } from "./store";
 import type { SavedView, ViewName } from "./store";
-import type { Job, RunOutcome, Schedule, ScheduleMode, Status } from "./types";
+import type { Job, Schedule, ScheduleMode, Status } from "./types";
 import { STATUS_META, statusOf } from "./types";
 import { skeletonRows } from "./views/common";
 import { vDetail } from "./views/detail";
@@ -66,6 +67,8 @@ import { vOverview } from "./views/overview";
 import { vSchedule } from "./views/schedule";
 import { StaggerCtx, vStagger } from "./views/stagger";
 import { vSettings } from "./views/settings";
+import { applyRunLogBatch, newRunCtx, vRunModal } from "./views/run";
+import type { RunCtx } from "./views/run";
 
 /* ------------------------------- chrome ------------------------------- */
 
@@ -372,12 +375,16 @@ function renderPalette(): void {
 
 /* -------------------------------- modals -------------------------------- */
 
-let runCtx: { file: string; dry: boolean; outcome: RunOutcome | null; busy: boolean } | null = null;
+let runCtx: RunCtx | null = null;
+/** The live run-log subscription, alive until the modal closes. */
+let runUnsub: Unsubscribe | null = null;
 
 function closeModal(): void {
   S.palOpen = false;
   S.palQ = "";
   runCtx = null;
+  runUnsub?.();
+  runUnsub = null;
   staggerCtx = null;
   newJobCtx = null;
   newJobErr = null;
@@ -392,13 +399,8 @@ function openRunModal(file: string, dry: boolean): void {
     return;
   }
   S.palOpen = false;
-  runCtx = { file, dry, outcome: null, busy: false };
+  runCtx = newRunCtx(file, dry);
   renderRunModal();
-}
-
-function outcomeText(o: RunOutcome): string {
-  const body = [o.stdout.trim(), o.stderr.trim()].filter(Boolean).join("\n");
-  return esc(body || "(no output on stdout — silent, which is success)");
 }
 
 function renderRunModal(): void {
@@ -411,65 +413,38 @@ function renderRunModal(): void {
     return;
   }
 
-  const st = statusOf(j);
-  const quiet = st === "quiet";
-  const o = ctx.outcome;
-  const tone = ctx.dry ? "accent" : quiet ? "quiet" : "spoke";
-  const preview = o
-    ? outcomeText(o)
-    : ctx.dry
-      ? `[${esc(j.label)}] dry run — no changes made\n(no output on stdout — this run would be silent)`
-      : quiet
-        ? `[${esc(j.label)}] ${esc(j.last?.summary ?? "")}\n(no output on stdout — silent, which is success)`
-        : `== ${esc(j.label)} ==\n[${esc(j.label)}] ${esc(j.last?.summary ?? "never run")}`;
-  const badge = o
-    ? `<span class="badge ${o.timed_out ? "hang" : o.status}">${o.timed_out ? "Timed out" : STATUS_META[o.status].t}</span>`
-    : `<span class="badge ${ctx.dry ? "off" : quiet ? "quiet" : st}">${
-        ctx.dry ? "preview" : STATUS_META[st].t
-      }</span>`;
-
-  setLayer(`
-    <div class="scrim" data-close><div class="modal" style="width:min(620px,100%)">
-      <div class="row" style="gap:9px">
-        <span style="color:var(--${tone})">${ctx.dry ? IC.flask : quiet ? IC.check : IC.warn}</span>
-        <div class="col" style="gap:1px"><h3 style="margin:0">${ctx.dry ? "Dry run" : "Run"} — ${esc(j.title)}</h3>
-          <span class="muted mono" style="font-size:11.5px">bin/run-job jobs/${esc(j.file)}</span></div>
-        ${badge}
-      </div>
-      <pre class="src" style="margin-top:13px">${preview}</pre>
-      ${
-        o
-          ? `<div class="row muted" style="font-size:11px;margin-top:9px;gap:11px">
-              <span class="mono">rc=${o.rc}</span>
-              <span class="mono">${fmtDur(o.duration_s)}</span>
-              ${o.timed_out ? '<span style="color:var(--hang)">timed out</span>' : ""}
-            </div>`
-          : ""
-      }
-      <div class="row" style="margin-top:16px;justify-content:flex-end;gap:7px">
-        ${
-          ctx.busy
-            ? `<span class="row muted" style="font-size:11.5px;gap:6px"><span class="spin">${IC.refresh}</span>Running…</span>`
-            : ""
-        }
-        <button class="btn" data-close>${o ? "Done" : "Cancel"}</button>
-        ${
-          o
-            ? ""
-            : `<button class="btn pri" data-run-confirm="1">${ctx.dry ? IC.flask : IC.play} ${
-                ctx.dry ? "Dry run" : "Run now"
-              }</button>`
-        }
-      </div>
-    </div></div>`);
+  // Streaming repaints the modal often. Preserve the reading position, and
+  // only auto-scroll when the user was already at the bottom: never fight
+  // someone who scrolled up to read an earlier line.
+  const prev = $<HTMLElement>("[data-run-stream]");
+  const stick = !prev || prev.scrollHeight - prev.clientHeight - prev.scrollTop < 24;
+  const scrollTop = prev?.scrollTop ?? 0;
+  setLayer(vRunModal(ctx, j));
+  const next = $<HTMLElement>("[data-run-stream]");
+  if (next) next.scrollTop = stick ? next.scrollHeight : scrollTop;
 }
 
 async function confirmRun(): Promise<void> {
   const ctx = runCtx;
   if (!ctx || ctx.busy) return;
   ctx.busy = true;
+  S.running.add(ctx.file);
   S.busy = `${ctx.dry ? "Dry-running" : "Running"} ${ctx.file}`;
-  renderChrome();
+
+  // Subscribe BEFORE invoking the run, or the first lines are lost. Streaming
+  // is best-effort: a failed subscription must not fail the run.
+  runUnsub?.();
+  runUnsub = null;
+  try {
+    runUnsub = await backend().subscribeRunLog((batch) => {
+      if (runCtx !== ctx) return;
+      if (applyRunLogBatch(ctx, batch)) renderRunModal();
+    });
+  } catch {
+    runUnsub = null;
+  }
+
+  render();
   renderRunModal();
 
   try {
@@ -486,9 +461,10 @@ async function confirmRun(): Promise<void> {
     closeModal();
   } finally {
     ctx.busy = false;
+    S.running.delete(ctx.file);
     S.busy = null;
     render();
-    if (runCtx) renderRunModal();
+    if (runCtx === ctx) renderRunModal();
   }
 }
 
@@ -558,7 +534,7 @@ function openDeepModal(file: string): void {
 
 function confirmDeep(file: string): void {
   closeModal();
-  runCtx = { file, dry: false, outcome: null, busy: false };
+  runCtx = newRunCtx(file, false);
   renderRunModal();
   void confirmRun();
 }

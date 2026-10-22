@@ -22,10 +22,14 @@ export function vJobs(): string {
 
   const row = (j: Job): string => {
     const st = statusOf(j);
-    return `<tr data-open="${esc(j.file)}" class="${S.picked.has(j.file) ? "pick" : ""}">
+    const running = S.running.has(j.file);
+    return `<tr data-open="${esc(j.file)}" class="${S.picked.has(j.file) ? "pick" : ""}"
+        ${running ? 'data-running="1"' : ""}>
       <td class="c" style="width:28px"><input type="checkbox" data-pick="${esc(j.file)}"
         ${S.picked.has(j.file) ? "checked" : ""}></td>
-      <td class="c"><span class="dot ${st}" title="${STATUS_META[st].t}"></span></td>
+      <td class="c"><span class="dot ${running ? "running" : st}" title="${
+        running ? "Running now" : STATUS_META[st].t
+      }"></span></td>
       <td class="c" style="min-width:190px">
         <div class="nm trunc">${esc(j.title)}</div>
         <code class="mini">${esc(j.file)}</code></td>
@@ -38,7 +42,11 @@ export function vJobs(): string {
         <div class="mini">${j.timeout}s cap</div></td>
       <td class="c" style="max-width:220px"><div class="mono trunc" style="font-size:11px"
         title="${esc(j.last?.summary ?? "")}">${esc(j.last?.summary ?? (j.enabled ? "never run" : "disabled"))}</div></td>
-      <td class="c"><span class="badge ${st}">${STATUS_META[st].t}</span></td>
+      <td class="c">${
+        running
+          ? `<span class="badge running"><span class="spin">${IC.refresh}</span>Running</span>`
+          : `<span class="badge ${st}">${STATUS_META[st].t}</span>`
+      }</td>
       <td class="c"><div class="row" style="gap:2px;justify-content:flex-end">
         <button class="ibtn" data-run="${esc(j.file)}" title="Run now">${IC.play}</button>
         <button class="ibtn" data-dry="${esc(j.file)}" title="Dry run">${IC.flask}</button>

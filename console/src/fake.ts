@@ -6,8 +6,8 @@
  * silent fallback for a failing real backend — a failed invoke must surface as
  * an error in the UI. Activate it explicitly with `?fake=1` in the URL.
  */
-import type { Backend } from "./api";
-import type { DayStat, Job, NewJob, Run, RunOutcome, Schedule, Status } from "./types";
+import type { Backend, Unsubscribe } from "./api";
+import type { DayStat, Job, NewJob, Run, RunLogBatch, RunOutcome, Schedule, Status } from "./types";
 
 type RawRow = [
   number, // leading number in the filename
@@ -117,9 +117,35 @@ function buildJobs(): Job[] {
   });
 }
 
-export function fakeBackend(): Backend {
+/**
+ * A tiny pub/sub used by tests to drive `subscribeRunLog` without a Tauri
+ * runtime. The fake backend only subscribes; `emit` is the test's hand on the
+ * stream. Listeners are copied before dispatch so an unsubscribe during a
+ * batch cannot skip another listener.
+ */
+export class FakeRunLogBus {
+  private listeners = new Set<(batch: RunLogBatch) => void>();
+
+  subscribe(fn: (batch: RunLogBatch) => void): Unsubscribe {
+    this.listeners.add(fn);
+    return () => {
+      this.listeners.delete(fn);
+    };
+  }
+
+  emit(batch: RunLogBatch): void {
+    for (const fn of [...this.listeners]) fn(batch);
+  }
+
+  get size(): number {
+    return this.listeners.size;
+  }
+}
+
+export function fakeBackend(options: { runLog?: FakeRunLogBus } = {}): Backend {
   let jobs = buildJobs();
   const rnd = makeRnd(11);
+  const runLog = options.runLog;
 
   const find = (file: string): Job => {
     const j = jobs.find((x) => x.file === file);
@@ -220,6 +246,9 @@ export function fakeBackend(): Backend {
         stderr: "",
         timed_out: false,
       } satisfies RunOutcome;
+    },
+    async subscribeRunLog(onBatch) {
+      return runLog ? runLog.subscribe(onBatch) : () => {};
     },
     async runsFor(file, limit) {
       return synthRuns(find(file), limit);
