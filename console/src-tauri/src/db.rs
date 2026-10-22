@@ -192,10 +192,27 @@ impl Db {
             .collect())
     }
 
-    /// FTS5 search across summary + stdout, newest first.
+    /// Recent runs, newest first, when there is no search text at all.
+    ///
+    /// Deliberately reads `runs` rather than FTS: the index only covers
+    /// `summary` and `stdout`, and a quiet run has both empty, so no wildcard
+    /// expression could ever list one. This is the Logs view's default path.
+    fn recent(&self, limit: i64) -> Result<Vec<Run>> {
+        let conn = self.lock();
+        let sql = format!(
+            "SELECT {RUN_COLS} FROM runs ORDER BY started_at DESC, id DESC LIMIT ?1"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params![limit.max(0)], row_to_run)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// FTS5 search across summary + stdout, newest first. An empty or
+    /// whitespace-only query lists the most recent runs instead: that is the
+    /// Logs view on first load, and it must not render an empty history.
     pub fn search(&self, q: &str, limit: i64) -> Result<Vec<Run>> {
         let Some(match_expr) = fts_query(q) else {
-            return Ok(Vec::new());
+            return self.recent(limit);
         };
         let conn = self.lock();
         // Subquery rather than a join: FTS5's MATCH wants the table name on
@@ -1375,6 +1392,49 @@ this line is not a log line at all
         db.prune(0).unwrap();
         assert!(db.last_run("99-monthly.sh").unwrap().is_some());
         assert!(db.last_run("30-brew-update.sh").unwrap().is_some());
+    }
+
+    /// Regression: the Logs view opens with an empty search box, and the
+    /// quiet runs it must show carry `summary=''` and `stdout=''` — text FTS
+    /// cannot match, so a wildcard expression would still hide most of them.
+    /// An empty/whitespace-only query must list recent rows from `runs`.
+    #[test]
+    fn an_empty_query_lists_recent_runs_including_silent_ones() {
+        let t = Tmp::new("recent");
+        let db = t.db();
+        db.record_run(&new_run("10-mole-optimize.sh", 1_000, 0, "")).unwrap();
+        db.record_run(&new_run("20-mole-clean.sh", 2_000, 0, "")).unwrap();
+        db.record_run(&new_run("30-brew-update.sh", 3_000, 0, "spoke up"))
+            .unwrap();
+
+        let got = db.search("", 50).unwrap();
+        assert_eq!(got.len(), 3, "an empty query must not hide the run history");
+        assert_eq!(got[0].started_at, 3_000, "newest first");
+        assert_eq!(got[1].started_at, 2_000);
+        assert_eq!(got[2].started_at, 1_000);
+        // The silent runs are present even though FTS cannot see them.
+        assert_eq!(got[1].summary, "");
+        assert_eq!(got[1].stdout, "");
+        assert_eq!(got[0].summary, "spoke up");
+
+        // Whitespace-only is the same "no query" case.
+        assert_eq!(db.search("   ", 50).unwrap().len(), 3);
+        // `limit` is honoured, still newest first.
+        let two = db.search(" \t ", 2).unwrap();
+        assert_eq!(two.len(), 2);
+        assert_eq!(two[0].started_at, 3_000);
+        assert_eq!(two[1].started_at, 2_000);
+
+        // Same tiebreak as the FTS path: started_at DESC, id DESC.
+        db.record_run(&new_run("40-a.sh", 4_000, 0, "")).unwrap();
+        db.record_run(&new_run("40-b.sh", 4_000, 0, "")).unwrap();
+        let tied = db.search("", 2).unwrap();
+        assert_eq!(tied[0].job, "40-b.sh");
+        assert_eq!(tied[1].job, "40-a.sh");
+
+        // A real query still filters exactly as before.
+        assert_eq!(db.search("spoke", 50).unwrap().len(), 1);
+        assert_eq!(db.search("spoke", 50).unwrap()[0].job, "30-brew-update.sh");
     }
 
     #[test]
