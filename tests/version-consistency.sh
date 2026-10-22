@@ -23,6 +23,19 @@
 # recorded in Cargo.lock. A same-named crates.io or path dependency therefore
 # cannot be selected by mistake — cargo resolves by package identity, not name.
 #
+# This depends on one Cargo output format: the Package ID Spec
+# `path+file:///abs/dir#name@version` that `cargo metadata` emits in
+# `packages[].id` and `cargo pkgid` prints. Per `cargo help pkgid` they share a
+# single specifier format, so the two steps agree by construction. Cargo 1.77.0
+# stabilized that format (see the Cargo CHANGELOG); older cargo printed the
+# legacy `name 0.4.0 (path+file:///abs/dir)`, which has no `@`. There
+# `rsplit('@', 1)[0]` yields the whole string, the `'#' not in spec` check
+# fires, and the gate fails — it stops loudly rather than selecting the wrong
+# package. That is the intended fail-safe direction, though it would block CI
+# on such a toolchain. Known-good: cargo 1.99.1, against which this gate was
+# developed and verified; CI installs the toolchain in the workflow's
+# `Install Rust toolchain` step.
+#
 # Consequence: this gate needs the Rust toolchain on PATH (CI installs it and
 # the rust-check gate already runs cargo). If cargo is missing the gate FAILS
 # loudly rather than quietly checking four surfaces while claiming five.
