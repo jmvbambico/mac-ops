@@ -4,7 +4,7 @@
  */
 import { IC } from "../icons";
 import { esc, groupsOf, localLoadProfile } from "../format";
-import { S, jobs } from "../store";
+import { S, getDraft, jobs } from "../store";
 import { asyncPanel, inlineErr } from "./common";
 
 export function vSettings(): string {
@@ -96,7 +96,7 @@ export function vSettings(): string {
     <div class="row" style="gap:9px;flex-wrap:wrap">
       <button class="btn" data-reindex>${IC.refresh} Reindex from log</button>
       <span class="row" style="gap:6px">
-        <input class="inp" type="number" id="prune-days" value="90" min="1" style="width:76px">
+        <input class="inp" type="number" id="prune-days" value="${esc(getDraft("prune-days") ?? 90)}" min="1" style="width:76px">
         <span class="muted" style="font-size:11.5px">days kept</span>
         <button class="btn" data-prune>${IC.trash} Prune runs</button>
       </span>
