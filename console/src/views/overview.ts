@@ -86,8 +86,9 @@ export function vOverview(): string {
       ? `<div class="card empty">
           <span class="muted">${IC.jobs}</span>
           <div class="t">No automations on disk</div>
-          <div class="muted" style="font-size:12px">MacOps reads <span class="mono">jobs/*.sh</span> from the
-            repository. Add one and it appears here.</div>
+          <div class="muted" style="font-size:12px">MacOps reads <span class="mono">jobs/*.sh</span> from your
+            automations root (<span class="mono">~/.mops</span> by default, changeable in Settings). Add one
+            and it appears here.</div>
           <button class="btn pri" data-add>${IC.plus} New automation</button>
         </div>`
       : ""

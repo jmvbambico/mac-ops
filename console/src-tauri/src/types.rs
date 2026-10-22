@@ -154,7 +154,8 @@ pub struct NewJob {
     pub kind: String, // mole | pkg | py | sh
     pub schedule: Schedule,
     pub timeout: u32,
-    /// Python template: path to the .py file, relative to the repo root.
+    /// Python template: path to the .py file, relative to the automations root
+    /// (the folder that contains `jobs/`).
     pub script_path: Option<String>,
     /// Package template: brew | npm | pipx | cargo | rustup | gem
     pub manager: Option<String>,

@@ -794,7 +794,7 @@ fn render_py(spec: &NewJob, file: &str, label: &str, tier: &str, timeout: u32) -
     s.push_str(&format!("LABEL=\"{label}\"\n"));
     s.push_str("DRY=\"${MOPS_DRY_RUN:-0}\"\n");
     s.push_str(&format!(
-        "# Script to run, relative to the repo root (resolved from this file).\nPY_SCRIPT=\"$SCRIPT_DIR/../{script}\"\n"
+        "# Script to run, relative to the automations root (the folder containing jobs/).\nPY_SCRIPT=\"$SCRIPT_DIR/../{script}\"\n"
     ));
     s.push_str("# Optional requirements file: <script>-requirements.txt beside the script.\n");
     s.push_str("REQ_FILE=\"${PY_SCRIPT%.py}-requirements.txt\"\n");

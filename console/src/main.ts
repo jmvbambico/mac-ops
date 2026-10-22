@@ -58,8 +58,10 @@ import type { Job, RunOutcome, Schedule, ScheduleMode, Status } from "./types";
 import { STATUS_META, statusOf } from "./types";
 import { skeletonRows } from "./views/common";
 import { vDetail } from "./views/detail";
+import { GroupCtx, applyBulkGroup, bulkGroupToast, planBulkGroup, vGroupModal } from "./views/group";
 import { vJobs } from "./views/jobs";
 import { vLogs } from "./views/logs";
+import { NewJobForm, defaultForm, submitNewJob, vNewJob } from "./views/newjob";
 import { vOverview } from "./views/overview";
 import { vSchedule } from "./views/schedule";
 import { StaggerCtx, vStagger } from "./views/stagger";
@@ -377,6 +379,9 @@ function closeModal(): void {
   S.palQ = "";
   runCtx = null;
   staggerCtx = null;
+  newJobCtx = null;
+  newJobErr = null;
+  groupCtx = null;
   closeLayer();
 }
 
@@ -645,6 +650,128 @@ async function applyStagger(): Promise<void> {
   }
 }
 
+/* ------------------------------ new automation ------------------------------ */
+
+/**
+ * The state of the "New automation" window. The form lives here, not in the
+ * DOM: a repaint (a kind change, a toast auto-dismiss) rebuilds the window
+ * from this object, so nothing the user typed is lost.
+ */
+let newJobCtx: NewJobForm | null = null;
+let newJobErr: string | null = null;
+
+function openNewJobModal(): void {
+  S.palOpen = false;
+  newJobCtx = defaultForm();
+  newJobErr = null;
+  renderNewJobModal();
+}
+
+function renderNewJobModal(): void {
+  const ctx = newJobCtx;
+  if (!ctx) return;
+  setLayer(vNewJob(ctx, newJobErr));
+}
+
+/**
+ * Copy one field of the window into the form. Returns false for an input that
+ * is not part of the window.
+ */
+function syncNewJobField(el: HTMLElement): boolean {
+  const ctx = newJobCtx;
+  if (!ctx) return false;
+  const v = (el as HTMLInputElement).value;
+  switch (el.id) {
+    case "nj-title":
+      ctx.title = v;
+      break;
+    case "nj-group":
+      ctx.group = v;
+      break;
+    case "nj-kind":
+      ctx.kind = v as NewJobForm["kind"];
+      break;
+    case "nj-subcommand":
+      ctx.subcommand = v;
+      break;
+    case "nj-manager":
+      ctx.manager = v;
+      break;
+    case "nj-script":
+      ctx.scriptPath = v;
+      break;
+    case "nj-mode":
+      ctx.mode = v as ScheduleMode;
+      break;
+    case "nj-time":
+      ctx.time = v;
+      break;
+    case "nj-day":
+      ctx.day = v;
+      break;
+    case "nj-every":
+      ctx.everyHours = Number(v);
+      break;
+    case "nj-timeout":
+      ctx.timeout = Number(v);
+      break;
+    default:
+      return false;
+  }
+  return true;
+}
+
+async function confirmNewJob(): Promise<void> {
+  const ctx = newJobCtx;
+  if (!ctx) return;
+  S.busy = "Creating automation";
+  renderChrome();
+  const res = await submitNewJob(ctx, (spec) => backend().createJob(spec));
+  S.busy = null;
+  if (!res.ok) {
+    // The backend's own message: it knows what the generated script failed on.
+    newJobErr = res.error;
+    toast(`Could not create the automation — ${res.error}`, "err");
+    renderNewJobModal();
+    return;
+  }
+  closeModal();
+  toast(`Created ${res.file} — disabled until it passes a clean dry run`, "ok");
+  await refreshJobs();
+  primeView();
+  render();
+}
+
+/* ------------------------------- group ------------------------------- */
+
+let groupCtx: GroupCtx | null = null;
+
+function openGroupModal(): void {
+  const files = [...S.picked];
+  if (!files.length) {
+    toast("Select automations first", "warn");
+    return;
+  }
+  S.palOpen = false;
+  groupCtx = {
+    files,
+    groups: groupsOf(jobs()).map((g) => g.name),
+    value: "",
+  };
+  setLayer(vGroupModal(groupCtx));
+}
+
+function applyGroupModal(): void {
+  const ctx = groupCtx;
+  if (!ctx) return;
+  const check = planBulkGroup(ctx.files, inputValue("#g-group"));
+  if (!check.ok) {
+    toast(check.reason, "warn");
+    return;
+  }
+  void bulkSetGroup(check.plan.files, check.plan.group);
+}
+
 /* ------------------------------- actions ------------------------------- */
 
 async function retry(what: string): Promise<void> {
@@ -727,6 +854,32 @@ async function bulkRun(files: string[], dry: boolean): Promise<void> {
   }
 }
 
+async function bulkSetGroup(files: string[], raw: string): Promise<void> {
+  const check = planBulkGroup(files, raw);
+  if (!check.ok) {
+    toast(check.reason, "warn");
+    return;
+  }
+  const { group } = check.plan;
+  S.picked.clear();
+  S.busy = `Moving ${check.plan.files.length} automation${check.plan.files.length === 1 ? "" : "s"} to ${group}`;
+  renderChrome();
+  try {
+    const result = await applyBulkGroup(check.plan.files, group, (file, title, next) =>
+      backend().setMeta(file, title, next),
+    );
+    const outcome = bulkGroupToast(result, group);
+    toast(outcome.msg, outcome.kind);
+  } catch (err) {
+    toast(`Move to group failed — ${errText(err)}`, "err");
+  } finally {
+    S.busy = null;
+    closeModal();
+    render();
+    await refreshJobs();
+  }
+}
+
 function handleBulk(kind: string): void {
   switch (kind) {
     case "clear":
@@ -746,7 +899,7 @@ function handleBulk(kind: string): void {
       openStaggerModal();
       break;
     case "group":
-      toast("Move to group is not available here yet — edit Group on an automation.", "warn");
+      openGroupModal();
       break;
   }
 }
@@ -810,6 +963,7 @@ const CLICKABLE =
   "[data-addtime],[data-deltime],[data-settimeout],[data-settitle],[data-validate],[data-clearf],[data-close]," +
   "[data-confirmdel],[data-confirmdeep],[data-run-confirm],[data-stagger-preview],[data-stagger-apply]," +
   "[data-retry],[data-theme-set],[data-reindex],[data-prune],[data-set-root]," +
+  "[data-add],[data-newjob-confirm],[data-group-apply]," +
   "#btn-add,#btn-add2,#btn-theme,#btn-pal,#btn-refresh,#log-group,#log-flat";
 
 document.addEventListener("click", (e) => {
@@ -834,12 +988,21 @@ document.addEventListener("click", (e) => {
     return;
   }
   if (id === "btn-add" || id === "btn-add2") {
-    toast("Creating automations from the console is not available here yet.", "warn");
+    openNewJobModal();
     return;
   }
   if (id === "log-group" || id === "log-flat") {
     S.logGroup = id === "log-group";
     render();
+    return;
+  }
+
+  if (d.newjobConfirm !== undefined) {
+    void confirmNewJob();
+    return;
+  }
+  if (d.add !== undefined) {
+    openNewJobModal();
     return;
   }
 
@@ -865,6 +1028,10 @@ document.addEventListener("click", (e) => {
   }
   if (d.staggerApply !== undefined) {
     void applyStagger();
+    return;
+  }
+  if (d.groupApply !== undefined) {
+    applyGroupModal();
     return;
   }
 
@@ -995,6 +1162,14 @@ document.addEventListener("click", (e) => {
 
 document.addEventListener("change", (e) => {
   const el = e.target;
+  if (el instanceof HTMLElement && el.id.startsWith("nj-")) {
+    syncNewJobField(el);
+    // The kind decides which per-kind field is shown, and the mode decides
+    // which schedule fields are shown: repaint the window from the form.
+    if (el.id === "nj-kind") newJobErr = null;
+    if (el.id === "nj-kind" || el.id === "nj-mode") renderNewJobModal();
+    return;
+  }
   if (el instanceof HTMLInputElement && el.dataset.toggle) {
     void setEnabled(el.dataset.toggle, el.checked);
     return;
@@ -1034,6 +1209,12 @@ function scheduleLogLoad(): void {
 document.addEventListener("input", (e) => {
   const el = e.target;
   if (!(el instanceof HTMLInputElement)) return;
+  if (el.id.startsWith("nj-")) {
+    // Mirror the keystroke into the form. No repaint: repainting the input
+    // being typed into is exactly what loses the caret and the value.
+    syncNewJobField(el);
+    return;
+  }
   if (el.id === "j-q") {
     S.q = el.value;
     render();
