@@ -203,5 +203,11 @@ fi
 # ---------------------------------------------------------------------------
 bash "$TOOL_ROOT/tests/log-line-no-config.sh" || fail "log_line regression test failed"
 
+# ---------------------------------------------------------------------------
+# 5. Per-job output log: log_output is silent (stdout is the alert channel),
+#    the cap is marked, and bin/run-job truncates job-<slug>.out.log.
+# ---------------------------------------------------------------------------
+bash "$TOOL_ROOT/tests/job-output-log.sh" || fail "per-job output log test failed"
+
 printf 'silent-contract: ok — nominal run printed nothing to stdout; negative control detected (%s bytes surfaced).\n' \
     "$(wc -c <"$NEG_OUT" | tr -d ' ')"

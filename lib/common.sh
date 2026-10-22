@@ -132,6 +132,56 @@ log_line() {
     printf '%s %s\n' "$(ts)" "$*" >> "$MOPS_LOG" 2>/dev/null || true
 }
 
+# Cap for the per-job output log. This is scratch detail, not the durable
+# record (logs/machine-ops.log is), so a pathological job must not be able to
+# fill the disk. The cap is checked across calls: however many times a job
+# calls log_output, the FILE never grows past it.
+MOPS_JOB_OUT_CAP="${MOPS_JOB_OUT_CAP:-262144}"
+
+# log_output <text> — append text to the per-job output log.
+#
+# bin/run-job exports MOPS_JOB_OUT (logs/job-<slug>.out.log) and truncates it
+# at run start. A job run outside bin/run-job has none, and this is then a
+# SILENT no-op — same guard-before-expansion discipline as log_line above.
+#
+# APPENDS, so a job may call it more than once in a run. ANSI escapes are
+# stripped (mole colourizes its output; the console renders this into an
+# escaped <pre>). Never writes to stdout (Principle I: stdout is the alert
+# channel) and never fails the caller. Past MOPS_JOB_OUT_CAP the write stops
+# and a "[truncated at N bytes]" marker is left in the file, because a
+# silently truncated log is a quiet lie.
+log_output() {
+    [[ -n "${MOPS_JOB_OUT:-}" ]] || return 0
+    local cap="${MOPS_JOB_OUT_CAP:-262144}"
+    [[ "$cap" =~ ^[0-9]+$ ]] || cap=262144
+    (( cap > 0 )) || return 0
+
+    local text text_bytes cur room marker budget
+    text="$(printf '%s' "$*" | strip_ansi 2>/dev/null || true)"
+    [[ -n "$text" ]] || return 0
+
+    cur="$(wc -c < "$MOPS_JOB_OUT" 2>/dev/null | tr -d '[:space:]' || true)"
+    [[ "$cur" =~ ^[0-9]+$ ]] || cur=0
+    (( cur < cap )) || return 0
+
+    room=$(( cap - cur ))
+    text_bytes="$(printf '%s' "$text" | wc -c | tr -d '[:space:]' || true)"
+    [[ "$text_bytes" =~ ^[0-9]+$ ]] || text_bytes=0
+    if (( text_bytes <= room )); then
+        printf '%s' "$text" >> "$MOPS_JOB_OUT" 2>/dev/null || true
+        return 0
+    fi
+
+    # Reserve room for the marker so the file lands on the cap when both fit.
+    # A tiny remaining room still gets the full marker: it may extend a few
+    # bytes past the cap, but a silent cut would be worse.
+    marker=$'\n'"[truncated at ${cap} bytes]"$'\n'
+    budget=$(( room - ${#marker} ))
+    (( budget > 0 )) || budget=0
+    printf '%s' "$text" | head -c "$budget" >> "$MOPS_JOB_OUT" 2>/dev/null || true
+    printf '%s' "$marker" >> "$MOPS_JOB_OUT" 2>/dev/null || true
+}
+
 # Alert queue. Buffer in a variable so a job decides ONCE, at the end,
 # whether it has anything worth surfacing.
 _ALERT_BUF=""
