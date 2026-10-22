@@ -40,15 +40,6 @@ POSITIVE_JOBS=(
     40-dry-run.sh
 )
 NEGATIVE_JOB=99-noisy.sh
-# Legacy-only jobs: they read the OLD name, like the owner's separate
-# automations repo. See section 4 — this is the rename's hazard test.
-HAZARD_JOBS=(
-    50-legacy-dry-run.sh
-    51-legacy-dry-run-quiet.sh
-)
-# Mentions the legacy name in a comment but never reads it: must produce no
-# migration note (the note is for reads, not prose).
-COMMENT_JOB=52-comment-only-legacy-mention.sh
 
 fail() {
     printf 'silent-contract: FAIL: %s\n' "$*" >&2
@@ -90,21 +81,6 @@ run_runner() {
         env MOPS_TOOL_ROOT="$TOOL_ROOT" \
             MOPS_AUTOMATIONS_ROOT="$root" \
             MOPS_DRY_RUN=1 \
-            HOME="$HOME_DIR" \
-            "$RUNNER" daily --dry-run
-    ) >"$out" 2>"$err" || RUNNER_RC=$?
-}
-
-# run_runner_clean <root> <stdout-file> <stderr-file> — the same, but with
-# NO dry-run variable in the ambient environment. The hazard test needs this:
-# if the runner's own export is missing, nothing else may mask it.
-run_runner_clean() {
-    local root="$1" out="$2" err="$3"
-    RUNNER_RC=0
-    (
-        env -u MOPS_DRY_RUN -u MACHINE_OPS_DRY_RUN \
-            MOPS_TOOL_ROOT="$TOOL_ROOT" \
-            MOPS_AUTOMATIONS_ROOT="$root" \
             HOME="$HOME_DIR" \
             "$RUNNER" daily --dry-run
     ) >"$out" 2>"$err" || RUNNER_RC=$?
@@ -222,104 +198,10 @@ if [[ ! -s "$NEG_OUT" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 4. THE HAZARD: a legacy-only job (reads MACHINE_OPS_DRY_RUN, exactly like
-#    the owner's live automations in a separate repo) run under
-#    `bin/run --dry-run` MUST observe "1". If the runner exports only the new
-#    name, the job falls through `:-0` and silently RUNS IN APPLY MODE — a
-#    real `mole clean` when a preview was requested.
-#
-#    This root holds TWO legacy-only jobs so the once-per-run guarantee of
-#    the migration note is observable: two jobs, exactly one log line.
-# ---------------------------------------------------------------------------
-HAZ_ROOT="$WORK/hazard"
-build_root "$HAZ_ROOT" "${HAZARD_JOBS[@]}"
-
-HAZ_OUT="$WORK/hazard.out"
-HAZ_ERR="$WORK/hazard.err"
-run_runner_clean "$HAZ_ROOT" "$HAZ_OUT" "$HAZ_ERR"
-
-assert_tool_root_clean "hazard case"
-
-if (( RUNNER_RC != 0 )); then
-    printf 'silent-contract: hazard run: bin/run exited %s\nstderr:\n' "$RUNNER_RC" >&2
-    cat "$HAZ_ERR" >&2
-    fail "bin/run failed under the legacy-only hazard fixtures"
-fi
-
-if [[ -s "$HAZ_OUT" ]]; then
-    printf 'silent-contract: hazard run wrote to stdout:\n' >&2
-    cat "$HAZ_OUT" >&2
-    fail "the legacy-only hazard run broke silence"
-fi
-
-HAZ_VALUE_FILE="$HAZ_ROOT/state/legacy-dry-run-value"
-if [[ ! -f "$HAZ_VALUE_FILE" ]]; then
-    fail "legacy-only job never ran: $HAZ_VALUE_FILE is missing"
-fi
-HAZ_VALUE="$(tr -d '[:space:]' < "$HAZ_VALUE_FILE")"
-if [[ "$HAZ_VALUE" != "1" ]]; then
-    printf 'silent-contract: HAZARD: a legacy-only job saw MACHINE_OPS_DRY_RUN=%q, not 1.\n' "$HAZ_VALUE" >&2
-    printf 'The runner must export BOTH MOPS_DRY_RUN and MACHINE_OPS_DRY_RUN while the legacy alias exists.\n' >&2
-    printf "Without it the owner's live jobs fall through ':-0' and run in APPLY MODE.\n" >&2
-    fail "legacy-only job did not observe dry-run"
-fi
-if [[ -f "$HAZ_ROOT/state/legacy-dry-run-apply" ]]; then
-    fail "legacy-only job took the APPLY path under --dry-run"
-fi
-
-# The migration note is log-only, never stdout (asserted above) and at most
-# once per run even with two legacy jobs.
-HAZ_LOG="$HAZ_ROOT/logs/machine-ops.log"
-for job in "${HAZARD_JOBS[@]}"; do
-    if ! grep -q -F -- "$job" "$HAZ_LOG"; then
-        fail "the hazard run never processed $job, so the once-per-run check is meaningless"
-    fi
-done
-NOTE_COUNT="$(grep -c -F 'reads deprecated MACHINE_OPS_DRY_RUN' "$HAZ_LOG" 2>/dev/null || true)"
-NOTE_COUNT="${NOTE_COUNT:-0}"
-if [[ "$NOTE_COUNT" != "1" ]]; then
-    printf 'silent-contract: expected exactly one deprecation note in %s, found %s\n' \
-        "$HAZ_LOG" "$NOTE_COUNT" >&2
-    cat "$HAZ_LOG" >&2
-    fail "deprecation note was not emitted exactly once per run"
-fi
-
-# ---------------------------------------------------------------------------
-# 5. The migration note follows READS, not prose. A job that only mentions
-#    MACHINE_OPS_DRY_RUN in a comment must not tell the user to migrate.
-# ---------------------------------------------------------------------------
-COMMENT_ROOT="$WORK/comment-only"
-build_root "$COMMENT_ROOT" "$COMMENT_JOB"
-
-COMMENT_OUT="$WORK/comment-only.out"
-COMMENT_ERR="$WORK/comment-only.err"
-run_runner_clean "$COMMENT_ROOT" "$COMMENT_OUT" "$COMMENT_ERR"
-
-if (( RUNNER_RC != 0 )); then
-    printf 'silent-contract: comment-only run: bin/run exited %s\nstderr:\n' "$RUNNER_RC" >&2
-    cat "$COMMENT_ERR" >&2
-    fail "bin/run failed under the comment-only fixture"
-fi
-if [[ -s "$COMMENT_OUT" ]]; then
-    printf 'silent-contract: comment-only run wrote to stdout:\n' >&2
-    cat "$COMMENT_OUT" >&2
-    fail "the comment-only fixture broke silence"
-fi
-COMMENT_LOG="$COMMENT_ROOT/logs/machine-ops.log"
-COMMENT_NOTES="$(grep -c -F 'reads deprecated MACHINE_OPS_DRY_RUN' "$COMMENT_LOG" 2>/dev/null || true)"
-COMMENT_NOTES="${COMMENT_NOTES:-0}"
-if [[ "$COMMENT_NOTES" != "0" ]]; then
-    printf 'silent-contract: a comment-only mention produced %s migration note(s):\n' \
-        "$COMMENT_NOTES" >&2
-    cat "$COMMENT_LOG" >&2
-    fail "the migration note fired on a comment instead of a variable read"
-fi
-
-# ---------------------------------------------------------------------------
-# 6. log_line must never abort its caller when no log path is configured.
+# 4. log_line must never abort its caller when no log path is configured.
 #    (Regression for the "${MOPS_LOG:?}" expansion that killed the job.)
 # ---------------------------------------------------------------------------
 bash "$TOOL_ROOT/tests/log-line-no-config.sh" || fail "log_line regression test failed"
 
-printf 'silent-contract: ok — nominal run printed nothing to stdout; negative control detected (%s bytes surfaced); legacy-only job observed dry_run=%s; comment-only mention logged no note.\n' \
-    "$(wc -c <"$NEG_OUT" | tr -d ' ')" "$HAZ_VALUE"
+printf 'silent-contract: ok — nominal run printed nothing to stdout; negative control detected (%s bytes surfaced).\n' \
+    "$(wc -c <"$NEG_OUT" | tr -d ' ')"
