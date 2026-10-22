@@ -926,7 +926,8 @@ exit 0
 fn render_sh(_spec: &NewJob, file: &str, label: &str, tier: &str, timeout: u32) -> String {
     let doc: Vec<&str> = vec![
         "Blank scaffold. Put the real work in do_work (apply) and preview_work",
-        "(dry run), then decide what deserves an alert.",
+        "(dry run), then decide what deserves an alert. Until you do, both stubs",
+        "print nothing and log that nothing is implemented yet.",
         "",
         "The contract, in one line: a nominal run prints NOTHING. log_line every",
         "run's one-line summary; alert ONLY on change, regression, or error.",
@@ -944,15 +945,15 @@ fn render_sh(_spec: &NewJob, file: &str, label: &str, tier: &str, timeout: u32) 
         r#"# preview_work — read-only preview for MOPS_DRY_RUN=1. Must mutate
 # NOTHING: no installs, no writes, no index refreshes.
 preview_work() {
-    # TODO: report what an apply run would change.
-    printf 'nothing to preview yet\n'
+    # TODO: report what an apply run would change, then log_line it.
+    log_line "[$LABEL] STUB: nothing implemented yet — this scaffold does nothing; edit preview_work"
 }
 
 # do_work — the real thing. Every command that could prompt reads /dev/null;
 # never sudo, never a password.
 do_work() {
-    # TODO: the real work goes here.
-    printf 'nothing to do yet\n'
+    # TODO: the real work goes here, then log_line its one-line summary.
+    log_line "[$LABEL] STUB: nothing implemented yet — this scaffold does nothing; edit do_work"
 }
 
 if [[ "$DRY" == "1" ]]; then
@@ -1948,6 +1949,38 @@ mod tests {
             let file = create(t.root(), &s).unwrap();
             let diags = validate(&t.jobs().join(&file)).unwrap();
             assert!(diags.is_empty(), "{file} ({}) diagnostics: {diags:?}", s.kind);
+        }
+    }
+
+    #[test]
+    fn sh_scaffold_is_silent_and_logs_a_stub() {
+        let t = Tmp::new("sh-silent-stub");
+        let file = create(t.root(), &spec("sh", "Blank Scaffold")).unwrap();
+        let text = std::fs::read_to_string(t.jobs().join(&file)).unwrap();
+
+        let work_fn = |name: &str| -> String {
+            let start = text
+                .find(&format!("{name}() {{"))
+                .unwrap_or_else(|| panic!("{name} missing from the scaffold"));
+            let rest = &text[start..];
+            let end = rest.find("\n}").expect("unclosed function");
+            rest[..end].to_string()
+        };
+
+        for name in ["preview_work", "do_work"] {
+            let body = work_fn(name);
+            assert!(
+                !body.contains("printf"),
+                "{name} must not write to stdout:\n{body}"
+            );
+            assert!(
+                body.contains("log_line "),
+                "{name} must log its stub summary:\n{body}"
+            );
+            assert!(
+                body.contains("STUB: nothing implemented yet"),
+                "{name} must say plainly that it is unimplemented:\n{body}"
+            );
         }
     }
 
