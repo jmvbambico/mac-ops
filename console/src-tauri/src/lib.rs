@@ -13,8 +13,6 @@ mod types;
 use db::Db;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use tauri::Manager;
 use types::{DayStat, Job, NewJob, Run, RunOutcome, Schedule};
 
@@ -163,16 +161,16 @@ async fn run_job(app: tauri::AppHandle, file: String, dry: bool) -> R<RunOutcome
         // what makes "new" mean this run. An overlapping scheduled run may
         // interleave its lines; that is accepted by design.
         let tail = stream::LogTail::at_end(&paths::run_log(&automations_root));
-        let done = Arc::new(AtomicBool::new(false));
-        let poller = stream::spawn(app.clone(), file.clone(), tail, done.clone());
+        let mut poller = stream::spawn(app.clone(), file.clone(), tail);
 
         let started = chrono::Utc::now().timestamp();
         let result = jobs::run(&tool_root, &automations_root, &file, dry);
 
-        // Stop and join BEFORE returning so the final lines (including a
-        // trailing partial line) are emitted while the UI still listens.
-        done.store(true, Ordering::SeqCst);
-        let _ = poller.join();
+        // Stop and join BEFORE recording the outcome so the final lines
+        // (including a trailing partial line) are emitted while the UI still
+        // listens. If `jobs::run` panics, the guard's `Drop` does this for us
+        // on the unwind path, so the poller can never outlive the run.
+        poller.stop();
 
         let out = result.map_err(e)?;
         let _ = state.db.record_run(&types::NewRun {

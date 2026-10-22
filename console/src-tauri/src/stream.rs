@@ -12,6 +12,11 @@
 //! (`20-mole-clean.sh`), and mapping between them is a trap. A scheduled run
 //! overlapping an on-demand run interleaves its lines into the stream; that is
 //! acceptable (arguably useful), and no locking is attempted.
+//!
+//! Known limitation: if the log is rotated (replaced) and the new file grows
+//! past the old byte offset within a single 120 ms poll, the bytes written in
+//! that window are skipped. Narrow, and fixing it properly needs inode/device
+//! identity tracking; the durable log still holds everything.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -52,6 +57,8 @@ impl LogTail {
         }
     }
 
+    /// The current byte offset. Only the tests read it.
+    #[cfg(test)]
     pub fn offset(&self) -> u64 {
         self.offset
     }
@@ -136,23 +143,69 @@ fn emit(app: &AppHandle, job: &str, lines: Vec<String>) {
     );
 }
 
-/// Poll `tail` until `done` is set, emitting batches as lines appear. The
-/// final partial line is flushed after the stop flag so nothing written just
-/// before exit is dropped.
-pub fn spawn(
-    app: AppHandle,
-    job: String,
-    mut tail: LogTail,
+/// Owns the poller thread: its stop flag and its join handle.
+///
+/// The guard exists because a leaked poller is a permanent defect. If the
+/// job runner panics, unwinding skips any explicit stop-and-join, and the
+/// thread would then poll every 120 ms for the life of the process, holding an
+/// `AppHandle` and emitting events nobody is listening for. Owning the thread
+/// in a guard means the stop happens on the normal path AND on unwind.
+///
+/// `Drop` sets the flag BEFORE joining: the thread checks the flag after its
+/// next poll and flushes the final partial batch on its way out, so the join
+/// must not race ahead of that flush.
+pub struct StreamGuard {
     done: Arc<AtomicBool>,
-) -> std::thread::JoinHandle<()> {
-    std::thread::spawn(move || loop {
-        emit(&app, &job, tail.read_new());
-        if done.load(Ordering::SeqCst) {
-            emit(&app, &job, tail.flush_partial());
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl StreamGuard {
+    /// Stop the thread and wait for it to finish. Idempotent: a second call
+    /// does nothing, and `Drop` calls it again.
+    pub fn stop(&mut self) {
+        self.done.store(true, Ordering::SeqCst);
+        if let Some(handle) = self.handle.take() {
+            // `join` returns Err when the thread panicked. Swallow it: a
+            // panic inside `Drop` during an unwind aborts the process.
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Drop for StreamGuard {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+/// Poll `tail` until the stop flag is set, emitting batches as lines appear.
+/// The final partial line is flushed after the stop flag so nothing written
+/// just before exit is dropped.
+pub fn spawn(app: AppHandle, job: String, tail: LogTail) -> StreamGuard {
+    spawn_with(tail, move |lines| emit(&app, &job, lines))
+}
+
+/// Spawn a poller with an explicit sink. `spawn` is the production seam (it
+/// emits to the frontend); this one exists so the thread's lifetime can be
+/// tested without a Tauri runtime.
+pub fn spawn_with<F>(mut tail: LogTail, mut sink: F) -> StreamGuard
+where
+    F: FnMut(Vec<String>) + Send + 'static,
+{
+    let done = Arc::new(AtomicBool::new(false));
+    let flag = done.clone();
+    let handle = std::thread::spawn(move || loop {
+        sink(tail.read_new());
+        if flag.load(Ordering::SeqCst) {
+            sink(tail.flush_partial());
             break;
         }
         std::thread::sleep(Duration::from_millis(120));
-    })
+    });
+    StreamGuard {
+        done,
+        handle: Some(handle),
+    }
 }
 
 #[cfg(test)]
@@ -273,5 +326,84 @@ mod tests {
         std::fs::write(tmp.log(), "fresh\n").unwrap();
         assert_eq!(tail.read_new(), vec!["fresh"]);
         assert_eq!(tail.offset(), "fresh\n".len() as u64);
+    }
+
+    #[test]
+    fn dropping_the_guard_stops_the_thread() {
+        let tmp = Tmp::new("guard");
+        let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = polls.clone();
+
+        {
+            let mut guard = spawn_with(LogTail::at_end(&tmp.log()), move |lines| {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let _ = lines;
+            });
+            std::thread::sleep(Duration::from_millis(300));
+            let before = polls.load(std::sync::atomic::Ordering::SeqCst);
+            assert!(before > 0, "the poller must have run before the drop");
+            guard.stop();
+        }
+
+        let after_stop = polls.load(std::sync::atomic::Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(300));
+        let later = polls.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            after_stop, later,
+            "the poller must not keep polling after the guard is dropped"
+        );
+    }
+
+    #[test]
+    fn the_guard_stops_the_thread_while_unwinding() {
+        let tmp = Tmp::new("unwind");
+        let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = polls.clone();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // Silence the default panic output: this panic is the point of the
+            // test, not a failure.
+            let previous = std::panic::take_hook();
+            std::panic::set_hook(Box::new(|_| {}));
+            let _guard = spawn_with(LogTail::at_end(&tmp.log()), move |lines| {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let _ = lines;
+            });
+            std::panic::set_hook(previous);
+            panic!("the job runner panicked");
+        }));
+        assert!(result.is_err(), "the closure must have unwound");
+
+        let after = polls.load(std::sync::atomic::Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(
+            after,
+            polls.load(std::sync::atomic::Ordering::SeqCst),
+            "a panic in the run must not leak the poller thread"
+        );
+    }
+
+    #[test]
+    fn the_final_partial_line_is_flushed_when_the_guard_stops() {
+        let tmp = Tmp::new("guardflush");
+        append(&tmp.log(), "first\n");
+        let tail = LogTail::at_end(&tmp.log());
+        let got = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = got.clone();
+
+        let mut guard = spawn_with(tail, move |lines| {
+            if !lines.is_empty() {
+                sink.lock().unwrap().extend(lines);
+            }
+        });
+        append(&tmp.log(), "last line no newline");
+        std::thread::sleep(Duration::from_millis(200));
+        guard.stop();
+
+        let seen = got.lock().unwrap().clone();
+        assert!(
+            seen.iter().any(|l| l == "last line no newline"),
+            "the trailing partial line must be flushed before the join: {seen:?}"
+        );
     }
 }

@@ -22,10 +22,31 @@ export interface RunCtx {
   busy: boolean;
   /** Lines streamed from the run log since this run started. */
   lines: string[];
+  /** How many streamed lines have been dropped by the retention cap. */
+  dropped: number;
 }
 
 export function newRunCtx(file: string, dry: boolean): RunCtx {
-  return { file, dry, outcome: null, busy: false, lines: [] };
+  return { file, dry, outcome: null, busy: false, lines: [], dropped: 0 };
+}
+
+/**
+ * How many streamed log lines are kept in memory for a run.
+ *
+ * A chatty job (or a scheduled run interleaving its lines into the same log)
+ * would otherwise grow the array without limit, and every repaint rebuilds
+ * the whole history into the `<pre>`. The cap keeps the newest lines; the
+ * dropped ones are named to the user rather than silently vanishing, because
+ * the durable record — `logs/machine-ops.log` — still has everything.
+ */
+export const MAX_RUN_LOG_LINES = 2000;
+
+/**
+ * The notice shown when lines have been dropped by the cap. The count is the
+ * true number of dropped lines for the run, so it never compounds.
+ */
+export function truncationNotice(dropped: number): string {
+  return `… ${dropped} earlier lines not shown (see logs/machine-ops.log)`;
 }
 
 /**
@@ -36,6 +57,13 @@ export function newRunCtx(file: string, dry: boolean): RunCtx {
 export function applyRunLogBatch(ctx: RunCtx, batch: RunLogBatch): boolean {
   if (batch.job !== ctx.file || batch.lines.length === 0) return false;
   ctx.lines.push(...batch.lines);
+  // Keep the tail, drop the head. The count of dropped lines is kept
+  // separately so the notice stays accurate as more batches arrive.
+  if (ctx.lines.length > MAX_RUN_LOG_LINES) {
+    const excess = ctx.lines.length - MAX_RUN_LOG_LINES;
+    ctx.lines.splice(0, excess);
+    ctx.dropped += excess;
+  }
   return true;
 }
 
@@ -46,7 +74,8 @@ export function applyRunLogBatch(ctx: RunCtx, batch: RunLogBatch): boolean {
  */
 export function runBody(ctx: RunCtx, job: Job): string {
   const o = ctx.outcome;
-  const logText = ctx.lines.join("\n").trim();
+  const notice = ctx.dropped > 0 ? truncationNotice(ctx.dropped) : "";
+  const logText = [notice, ctx.lines.join("\n")].filter(Boolean).join("\n").trim();
   const outText = o
     ? [o.stdout.trim(), o.stderr.trim()].filter(Boolean).join("\n")
     : "";
@@ -104,10 +133,11 @@ export function vRunModal(ctx: RunCtx, job: Job): string {
       <div class="row" style="margin-top:16px;justify-content:flex-end;gap:7px">
         ${
           ctx.busy
-            ? `<span class="row muted" style="font-size:11.5px;gap:6px"><span class="spin">${IC.refresh}</span>Running…</span>`
+            ? `<span class="row muted" style="font-size:11.5px;gap:6px"><span class="spin">${IC.refresh}</span>Running…</span>
+               <span class="muted" style="font-size:11.5px">This run continues in the background.</span>`
             : ""
         }
-        <button class="btn" data-close>${o ? "Done" : "Cancel"}</button>
+        <button class="btn" data-close>${o ? "Done" : ctx.busy ? "Close" : "Cancel"}</button>
         ${
           o
             ? ""
