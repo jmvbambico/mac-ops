@@ -273,8 +273,9 @@ def main() -> int:
     print(f"parsed={len(receipts)} dry_run={int(DRY)}")
 
     if any(r.malformed for r in receipts):
-        # Alert by failing: a non-zero exit is what the wrapper surfaces.
-        print("malformed receipts found", file=sys.stderr)
+        # Alert by FAILING. The wrapper alerts on a non-zero exit and attaches
+        # the last 15 lines of your output, so say the useful thing last.
+        print("malformed receipts found in 2 of 14")
         return 1
     return 0
 
@@ -282,9 +283,20 @@ if __name__ == "__main__":
     sys.exit(main())
 ```
 
-**Your script's stdout is captured by the wrapper and logged, not alerted.**
+**Your script's output is captured by the wrapper and logged, not alerted.**
 That is the opposite of the bash case, where stdout *is* the alert channel.
-To raise an alert from Python, **exit non-zero**.
+The wrapper runs you as `"$VENV_PY" "$PY_SCRIPT" < /dev/null 2>&1`, so stdout
+and stderr are captured together — stderr is not a shortcut to an alert.
+
+What the wrapper does with it:
+
+| Your script | What happens |
+|---|---|
+| prints, exits `0` | output goes to `log_output` and a trimmed `log_line`; the run stays **quiet** |
+| exits non-zero | an alert fires, carrying `rc` plus the **last 15 lines** of your output |
+
+So to raise an alert from Python, **exit non-zero** — and put the line you want
+a human to read at the end, because that is the part the alert quotes.
 
 Keep `MOPS_DRY_RUN` honoured in Python too — the wrapper passes it through.
 
