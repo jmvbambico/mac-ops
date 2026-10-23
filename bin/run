@@ -296,6 +296,15 @@ for job in "$JOBS_DIR"/*.sh; do
     job_rc=0
     job_timed_out=0
     job_started_epoch="$(date +%s)"
+    # The real start epoch, logged for the console's text-log parser. Without
+    # it the parser has to infer this job's start from the PREVIOUS job's
+    # completion, which is a second off whenever the hand-off crosses a
+    # boundary — two rows for one run, one of them blank. `started=` is a
+    # distinct token from every other `[run] job …` message (rc=TIMED OUT,
+    # tier/timeout notes, stuck-tree diagnostics), and the epoch is explicit
+    # rather than re-derived from this line's timestamp: the timestamp is
+    # when the line was WRITTEN, which is the very guess this replaces.
+    log_line "[run] job $job_name started=$job_started_epoch"
     dispatcher_pgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d '[:space:]' || true)"
     set -m
     bash "$job" < /dev/null >"$out_file" 2>"$err_file" &

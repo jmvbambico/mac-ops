@@ -209,5 +209,11 @@ bash "$TOOL_ROOT/tests/log-line-no-config.sh" || fail "log_line regression test 
 # ---------------------------------------------------------------------------
 bash "$TOOL_ROOT/tests/job-output-log.sh" || fail "per-job output log test failed"
 
+# ---------------------------------------------------------------------------
+# 6. Both writers log a job's REAL start epoch (`started=<epoch>`), which is
+#    what lets the console's parser key the feed and the text log to one row.
+# ---------------------------------------------------------------------------
+bash "$TOOL_ROOT/tests/run-start-line.sh" || fail "start-line test failed"
+
 printf 'silent-contract: ok — nominal run printed nothing to stdout; negative control detected (%s bytes surfaced).\n' \
     "$(wc -c <"$NEG_OUT" | tr -d ' ')"

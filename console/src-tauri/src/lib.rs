@@ -252,6 +252,15 @@ async fn run_job(app: tauri::AppHandle, file: String, dry: bool) -> R<RunOutcome
             summary: out.stdout.lines().next().unwrap_or("").to_string(),
             stdout: out.stdout.clone(),
         });
+        // The producer's record only ever sees stdout, so a quiet run's row
+        // starts life with a blank summary (Principle I: a nominal run prints
+        // NOTHING). The text log holds the job's own `log_line` detail for
+        // the same run; ingest it now so the row is complete the moment the
+        // run finishes instead of waiting for reindex or the launch backfill.
+        // One call: this is the same rebuild path reindex uses.
+        let _ = state
+            .db
+            .ingest_log(&paths::run_log(&automations_root));
         Ok(out)
     })
     .await
