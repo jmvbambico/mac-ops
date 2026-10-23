@@ -24,6 +24,12 @@ rather than an empty row.
 - **Examples** (`examples/jobs/`) — real automations to copy: Homebrew
   formulae with a hold list, a cleanup job, a CLI updater.
 
+## Documentation
+
+- [Using the console](docs/using-the-console.md) — what each view is for, with screenshots.
+- [Writing automations](docs/writing-automations.md) — the job contract, in bash and Python.
+- [`AGENTS.md`](AGENTS.md) — the constitution. It wins over everything else.
+
 ## Design rules worth knowing before you extend it
 
 - **Never root, never sudo.** Everything runs as you, under a *user*
@@ -127,6 +133,10 @@ exit 0
 
 Line 2 sets the tier, line 3 the timeout. Both are parsed as anchored full
 lines, so commented-out code can never be mistaken for metadata.
+
+That is the short version. [`docs/writing-automations.md`](docs/writing-automations.md)
+covers the rest: the three output channels, the dry-run contract, timeouts and
+process groups, privileges, Python automations, and a pre-flight checklist.
 
 ## Contributing
 
