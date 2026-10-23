@@ -79,6 +79,13 @@ export interface Backend {
   deleteJob(file: string, keepScript: boolean): Promise<void>;
   runJob(file: string, dry: boolean): Promise<RunOutcome>;
   /**
+   * Captured per-job output from `logs/job-<slug>.out.log`, written by the
+   * job's `log_output` calls near the end of a run. Fetch it AFTER `runJob`
+   * resolves, not while the job is in flight. An empty string means the job
+   * has not opted in — the ordinary case, not an error.
+   */
+  jobOutput(file: string): Promise<string>;
+  /**
    * Subscribe to the lines an on-demand run appends to the shared run log.
    * Resolves to an unsubscribe function. Streaming is best-effort: a failure
    * to subscribe must never fail the run itself.
@@ -110,6 +117,7 @@ export const tauriBackend: Backend = {
   createJob: (spec) => invoke<string>("create_job", { spec }),
   deleteJob: (file, keepScript) => invoke<void>("delete_job", { file, keepScript }),
   runJob: (file, dry) => invoke<RunOutcome>("run_job", { file, dry }),
+  jobOutput: (file) => invoke<string>("read_job_output", { file }),
   subscribeRunLog: (onBatch) =>
     listen<RunLogBatch>("run-log", (event) => {
       const payload = event.payload;

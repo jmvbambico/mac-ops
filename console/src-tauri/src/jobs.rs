@@ -457,6 +457,7 @@ else
     RC=$?
 fi
 CLEAN="$(printf '%s\n' "$OUT" | strip_ansi)"
+log_output "$CLEAN"
 ACTIONS="$(printf '%s\n' "$CLEAN" | grep -c -E '^ +(->|=>|.) ' || true)"
 
 log_line "[$LABEL] mole {sub} rc=$RC actions=$ACTIONS dry_run=$DRY"
@@ -652,6 +653,7 @@ if [[ "$DRY" == "1" ]]; then
 else
     REFRESH_OUT="$(pkg_refresh)"
     REFRESH_RC=$?
+    log_output "$REFRESH_OUT"
     if [[ "$REFRESH_RC" != "0" ]]; then
         alert "[$LABEL] index refresh exited rc=$REFRESH_RC (dry_run=$DRY)"
         alert "$(printf '%s\n' "$REFRESH_OUT" | strip_ansi | tail -n 10)"
@@ -663,6 +665,7 @@ fi
 
 LIST_RAW="$(pkg_list)"
 LIST_RC=$?
+log_output "$LIST_RAW"
 LIST_CLEAN="$(printf '%s\n' "$LIST_RAW" | strip_ansi)"
 if [[ "$LIST_RC" != "0" ]]; then
     alert "[$LABEL] outdated query exited rc=$LIST_RC (dry_run=$DRY)"
@@ -705,6 +708,7 @@ fi
 log_line "[$LABEL] upgrade argv names: ${ITEMS[*]}"
 UP_OUT="$(pkg_upgrade "${ITEMS[@]}")"
 UP_RC=$?
+log_output "$UP_OUT"
 UP_CLEAN="$(printf '%s\n' "$UP_OUT" | strip_ansi)"
 if [[ "$UP_RC" != "0" ]]; then
     alert "[$LABEL] upgrade exited rc=$UP_RC (dry_run=$DRY)"
@@ -732,6 +736,7 @@ fi
 
 UP_OUT="$(pkg_upgrade)"
 UP_RC=$?
+log_output "$UP_OUT"
 UP_CLEAN="$(printf '%s\n' "$UP_OUT" | strip_ansi)"
 log_line "[$LABEL] upgrade rc=$UP_RC items_before=$ITEM_COUNT dry_run=$DRY"
 if [[ "$UP_RC" != "0" ]]; then
@@ -865,6 +870,7 @@ else
         fi
         VENV_OUT="$("$PYTHON" -m venv "$VENV_DIR" < /dev/null 2>&1)"
         VENV_RC=$?
+        log_output "$VENV_OUT"
         if [[ "$VENV_RC" != "0" || ! -x "$VENV_PY" ]]; then
             alert "[$LABEL] venv creation failed rc=$VENV_RC at $VENV_DIR"
             alert "$(printf '%s\n' "$VENV_OUT" | strip_ansi | tail -n 10)"
@@ -880,6 +886,7 @@ else
     if (( NEED_INSTALL == 1 )); then
         PIP_OUT="$("$VENV_PY" -m pip install --disable-pip-version-check --quiet -r "$REQ_FILE" < /dev/null 2>&1)"
         PIP_RC=$?
+        log_output "$PIP_OUT"
         if [[ "$PIP_RC" != "0" ]]; then
             alert "[$LABEL] pip install -r $REQ_FILE exited rc=$PIP_RC"
             alert "$(printf '%s\n' "$PIP_OUT" | strip_ansi | tail -n 10)"
@@ -904,6 +911,7 @@ fi
 export MOPS_DRY_RUN="$DRY"
 RUN_OUT="$("$VENV_PY" "$PY_SCRIPT" < /dev/null 2>&1)"
 RUN_RC=$?
+log_output "$RUN_OUT"
 RUN_CLEAN="$(printf '%s\n' "$RUN_OUT" | strip_ansi)"
 
 log_line "[$LABEL] script=$PY_SCRIPT rc=$RUN_RC dry_run=$DRY"
@@ -964,6 +972,7 @@ else
     RC=$?
 fi
 CLEAN="$(printf '%s\n' "$OUT" | strip_ansi)"
+log_output "$CLEAN"
 
 # Always one line in the run log, silent or not.
 log_line "[$LABEL] rc=$RC dry_run=$DRY summary=$(printf '%s' "$CLEAN" | head -n 1)"
@@ -1607,6 +1616,11 @@ mod tests {
             assert!(text.contains("< /dev/null"), "{}", why("stdin redirect"));
             assert!(text.contains("log_line "), "{}", why("log_line summary"));
             assert!(text.contains("alert "), "{}", why("alert"));
+            // Captured command output must reach the per-job output file, so a
+            // newly created automation is visible in the console beyond its
+            // one-line summaries. `log_output` writes a file, never stdout, so
+            // this does not weaken silence.
+            assert!(text.contains("log_output "), "{}", why("log_output opt-in"));
             assert!(
                 text.trim_end().ends_with("flush_alerts \"$LABEL\"\nexit 0"),
                 "{}",
@@ -1712,6 +1726,141 @@ mod tests {
         // Silent or not, every run leaves a line in the log.
         let logged = std::fs::read_to_string(&log).unwrap();
         assert!(logged.lines().count() >= 10, "run log:\n{logged}");
+    }
+
+    /// The contract the console advertises: a generated job writes its captured
+    /// command output to `$MOPS_JOB_OUT`. Every other execution test runs with
+    /// that variable ABSENT, so `log_output` hits its early `return 0` and the
+    /// write is never exercised. The dangerous case is a variable that is in
+    /// scope but EMPTY when `log_output` is called — `log_output ""` succeeds
+    /// silently, every silence test still passes, and the file is empty in
+    /// production. That is exactly the "I ran it and saw no output" symptom, so
+    /// this test runs each kind with the variable set and a speaking stub.
+    ///
+    /// NOTE: `log_output` arrives in `lib/common.sh` with the runner half of
+    /// this feature. Until that lands, this fails with `log_output: command
+    /// not found` — for the right reason, and by design. Do not stub it.
+    #[test]
+    fn generated_jobs_write_captured_output_to_mops_job_out() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let common = repo.join("lib/common.sh");
+        if !common.is_file() {
+            return; // nothing to execute against
+        }
+        let t = Tmp::new("job-out");
+        std::fs::create_dir_all(t.root().join("lib")).unwrap();
+        std::fs::create_dir_all(t.root().join("tools")).unwrap();
+        std::fs::copy(&common, t.root().join("lib/common.sh")).unwrap();
+        std::fs::write(t.root().join("tools/noop.py"), "print()\n").unwrap();
+
+        // A distinctive string the stubbed tool emits; the file must carry it,
+        // not merely be non-empty.
+        const MARKER: &str = "MOPS-CAPTURED-OUTPUT-MARKER";
+
+        let stub = t.root().join("stub");
+        std::fs::write(
+            &stub,
+            format!("#!/usr/bin/env bash\nprintf '%s\\n' '{MARKER}'\nexit 0\n"),
+        )
+        .unwrap();
+        make_executable(&stub).unwrap();
+
+        // The reachability probe must answer "online" without the network:
+        // a fake `nc` on PATH makes is_online return true.
+        let bindir = t.root().join("bin");
+        std::fs::create_dir_all(&bindir).unwrap();
+        let nc = bindir.join("nc");
+        std::fs::write(&nc, "#!/usr/bin/env bash\nexit 0\n").unwrap();
+        make_executable(&nc).unwrap();
+        let path_env = format!(
+            "{}:{}",
+            bindir.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+
+        // py only reaches its captured run when a usable venv already exists,
+        // so the venv interpreter is a stub that speaks the marker too.
+        let venv_dir = t.root().join("venv");
+        std::fs::create_dir_all(venv_dir.join("bin")).unwrap();
+        let venv_py = venv_dir.join("bin/python3");
+        std::fs::write(
+            &venv_py,
+            format!("#!/usr/bin/env bash\nprintf '%s\\n' '{MARKER}'\nexit 0\n"),
+        )
+        .unwrap();
+        make_executable(&venv_py).unwrap();
+
+        let mut mole = spec("mole", "Mole Optimize");
+        mole.subcommand = Some("optimize".into());
+        let mut pkg = spec("pkg", "Npm Updates");
+        pkg.manager = Some("npm".into());
+        let mut py = spec("py", "Report Generator");
+        py.script_path = Some("tools/noop.py".into());
+        let cases: Vec<NewJob> = vec![mole, pkg, py, spec("sh", "Blank Scaffold")];
+
+        for s in cases {
+            let file = create(t.root(), &s).unwrap();
+            let job = t.jobs().join(&file);
+            let outfile = t
+                .root()
+                .join(format!("{}.out.log", file.trim_end_matches(".sh")));
+            let log = t.root().join("run.log");
+
+            let mut cmd = Command::new("/bin/bash");
+            cmd.arg(&job)
+                .env("MOPS_LOG", &log)
+                .env("MOPS_JOB_OUT", &outfile)
+                .env("PATH", &path_env)
+                .env("MOPS_MOLE", &stub)
+                .env("MOPS_PKG_BIN", &stub)
+                .env("MOPS_PYTHON", &stub)
+                .env("MOPS_VENV_DIR", &venv_dir)
+                .env_remove("MOPS_TOOL_ROOT")
+                .env_remove("MOPS_AUTOMATIONS_ROOT")
+                .env_remove("MOPS_FORCE_OFFLINE")
+                .stdin(Stdio::null());
+            if s.kind == "py" {
+                // A real run: the venv already exists, so no network or install.
+                cmd.env_remove("MOPS_DRY_RUN");
+            } else {
+                cmd.env("MOPS_DRY_RUN", "1");
+            }
+
+            let out = cmd.output().unwrap();
+            let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+            assert_eq!(
+                out.status.code(),
+                Some(0),
+                "{file} ({}) must exit 0; stderr:\n{stderr}",
+                s.kind
+            );
+            // The important half: enabling the output file must not make a
+            // nominal run speak. Principle I still holds with MOPS_JOB_OUT set.
+            assert!(
+                out.stdout.is_empty(),
+                "{file} ({}) spoke on stdout with MOPS_JOB_OUT set; stdout:\n{}",
+                s.kind,
+                String::from_utf8_lossy(&out.stdout)
+            );
+
+            let wrote = std::fs::read_to_string(&outfile).unwrap_or_default();
+            if s.kind == "sh" {
+                // The scaffold's work functions are silent stubs by design:
+                // they log_line and never print, so there is genuinely no
+                // captured output. Assert that honest empty rather than
+                // loosening the other three.
+                assert!(
+                    wrote.trim().is_empty(),
+                    "{file} scaffold must not invent captured output; file:\n{wrote}"
+                );
+            } else {
+                assert!(
+                    wrote.contains(MARKER),
+                    "{file} ({}) did not write the stubbed output to MOPS_JOB_OUT; file={wrote:?}; stderr:\n{stderr}",
+                    s.kind
+                );
+            }
+        }
     }
 
     /// Apply mode, end to end, against a stub manager: a successful upgrade

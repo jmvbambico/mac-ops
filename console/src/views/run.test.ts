@@ -5,9 +5,11 @@ import type { Job, RunLogBatch } from "../types";
 import {
   MAX_RUN_LOG_LINES,
   applyRunLogBatch,
+  applyRunOutput,
   newRunCtx,
   vRunModal,
 } from "./run";
+import type { RunCtx } from "./run";
 
 const FILE = "11-mole-clean.sh";
 let fleet: Job[] = [];
@@ -230,5 +232,62 @@ describe("Backend.subscribeRunLog seam", () => {  it("delivers batches through t
     expect(bus.size).toBe(0);
     bus.emit({ job: FILE, lines: ["two"] });
     expect(seen).toHaveLength(1);
+  });
+});
+
+describe("captured per-job output", () => {
+  const finished = (): RunCtx => {
+    const ctx = newRunCtx(FILE, false);
+    ctx.outcome = {
+      status: "quiet",
+      rc: 0,
+      duration_s: 91,
+      stdout: "",
+      stderr: "",
+      timed_out: false,
+    };
+    return ctx;
+  };
+
+  it("renders the captured report the one-line summaries hide", () => {
+    const ctx = finished();
+    const report = "== mole clean ==\n  -> removed 1.2G of caches\n  -> emptied Trash";
+    expect(applyRunOutput(ctx, report)).toBe(true);
+
+    const html = vRunModal(ctx, job());
+    expect(html).toContain("removed 1.2G of caches");
+    // Real output exists, so the honest-but-useless fallback must give way.
+    expect(html).not.toContain("silent, which is success");
+  });
+
+  it("escapes captured output like the streamed lines", () => {
+    const ctx = finished();
+    applyRunOutput(ctx, "<script>alert('x')</script>");
+    const html = vRunModal(ctx, job());
+    expect(html).not.toContain("<script>");
+    expect(html).toContain("&lt;script&gt;");
+  });
+
+  it("falls back cleanly when the job has not opted in", () => {
+    const ctx = finished();
+    expect(applyRunOutput(ctx, "")).toBe(false);
+    expect(vRunModal(ctx, job())).toContain("silent, which is success");
+  });
+
+  it("keeps the live streamed lines when captured output is added", () => {
+    const ctx = finished();
+    applyRunLogBatch(ctx, { job: FILE, lines: ["streamed detail"] });
+    applyRunOutput(ctx, "captured report body");
+
+    const html = vRunModal(ctx, job());
+    expect(html).toContain('data-run-stream="1"');
+    expect(html).toContain("streamed detail");
+    expect(html).toContain("captured report body");
+  });
+
+  it("reads through the fake backend, empty for a never-run job", async () => {
+    const backend = fakeBackend();
+    expect(await backend.jobOutput(FILE)).toContain("mole-clean");
+    expect(await backend.jobOutput("73-ledger-sync.sh")).toBe("");
   });
 });
