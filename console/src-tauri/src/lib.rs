@@ -204,6 +204,26 @@ async fn delete_job(app: tauri::AppHandle, file: String, keep_script: bool) -> R
     .await
 }
 
+/// Record a finished console-triggered run from what the SHELL wrote.
+///
+/// `bin/run-job` is the single clock and the single writer: it stamps
+/// `run_started_epoch` once, logs it as `started=<epoch>`, and passes that
+/// same value to `record_run` for `logs/runs.jsonl`. The console must not
+/// stamp a second start time of its own — two clocks can land a second apart
+/// and split one run into two rows, one of them blank.
+///
+/// Ingest order is load-bearing, exactly as in `reindex`: the text log first
+/// (its job summary fills a quiet run's empty feed summary), then the feed
+/// (authoritative for duration/rc/status/dry_run). Reversing it would let an
+/// empty feed summary land first and then let the parser overwrite metrics.
+///
+/// Best-effort, like the feed write itself: a database hiccup must never turn
+/// a completed run into a reported failure.
+fn record_finished_run(db: &Db, automations_root: &std::path::Path) {
+    let _ = db.ingest_log(&paths::run_log(automations_root));
+    let _ = db.ingest_runs_jsonl(&paths::runs_jsonl(automations_root));
+}
+
 /// Run now, in-process (not via launchd) so the UI can stream the outcome.
 /// The run is recorded best-effort: a database failure must never be
 /// reported as a job failure.
@@ -232,7 +252,6 @@ async fn run_job(app: tauri::AppHandle, file: String, dry: bool) -> R<RunOutcome
         let tail = stream::LogTail::at_end(&paths::run_log(&automations_root));
         let mut poller = stream::spawn(app.clone(), file.clone(), tail);
 
-        let started = chrono::Utc::now().timestamp();
         let result = jobs::run(&tool_root, &automations_root, &file, dry);
 
         // Stop and join BEFORE recording the outcome so the final lines
@@ -242,25 +261,9 @@ async fn run_job(app: tauri::AppHandle, file: String, dry: bool) -> R<RunOutcome
         poller.stop();
 
         let out = result.map_err(e)?;
-        let _ = state.db.record_run(&types::NewRun {
-            job: file,
-            started_at: started,
-            duration_s: out.duration_s,
-            rc: out.rc,
-            status: out.status,
-            dry_run: dry,
-            summary: out.stdout.lines().next().unwrap_or("").to_string(),
-            stdout: out.stdout.clone(),
-        });
-        // The producer's record only ever sees stdout, so a quiet run's row
-        // starts life with a blank summary (Principle I: a nominal run prints
-        // NOTHING). The text log holds the job's own `log_line` detail for
-        // the same run; ingest it now so the row is complete the moment the
-        // run finishes instead of waiting for reindex or the launch backfill.
-        // One call: this is the same rebuild path reindex uses.
-        let _ = state
-            .db
-            .ingest_log(&paths::run_log(&automations_root));
+        // No direct record_run here: bin/run-job already wrote the feed from
+        // the ONE shell clock, and both ingests below derive the row from it.
+        record_finished_run(&state.db, &automations_root);
         Ok(out)
     })
     .await
@@ -597,5 +600,104 @@ mod tests {
             !got.contains("0123456789abcdef\n… output truncated"),
             "nothing may be prepended into the tail itself"
         );
+    }
+
+    /// A console-triggered run must key on the SHELL's clock, not a second
+    /// one read in Rust. `bin/run-job` logs `started=<epoch>` and writes the
+    /// feed with that same epoch; the console only ingests. Under the old
+    /// code a direct `record_run` stamped another `Utc::now()` and could land
+    /// a second earlier, leaving two rows for one run (one blank).
+    #[test]
+    fn a_console_run_records_one_row_from_the_shell_clock() {
+        let tmp = Tmp::new("console-run");
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("repo root");
+        std::fs::write(
+            tmp.0.join("jobs/20-console.sh"),
+            "#!/usr/bin/env bash\n# tier: daily\n\
+             source \"$MOPS_TOOL_ROOT/lib/common.sh\"\n\
+             log_line \"[console] skills=4 updated=none rc=0 dry_run=0\"\n\
+             exit 0\n",
+        )
+        .unwrap();
+
+        // The console's path: jobs::run shells out to bin/run-job, which is
+        // the single writer of both the text log and runs.jsonl.
+        let out = jobs::run(repo, &tmp.0, "20-console.sh", false).unwrap();
+        assert!(out.stdout.is_empty(), "a nominal run is silent");
+        assert_eq!(out.rc, 0);
+
+        let app = tmp.app();
+        record_finished_run(&app.db, &tmp.0);
+
+        let log = std::fs::read_to_string(tmp.0.join("logs/machine-ops.log")).unwrap();
+        let shell_start: i64 = log
+            .lines()
+            .find(|l| l.contains("[run-job] start job=20-console.sh"))
+            .and_then(|l| {
+                l.split_whitespace()
+                    .find_map(|t| t.strip_prefix("started="))
+            })
+            .and_then(|v| v.parse().ok())
+            .expect("bin/run-job must log its real start epoch");
+
+        let rows = app.db.runs_for("20-console.sh", 10).unwrap();
+        assert_eq!(
+            rows.len(),
+            1,
+            "the shell is the only writer; a second clock must not add a row"
+        );
+        assert_eq!(
+            rows[0].started_at, shell_start,
+            "the row's identity comes from the shell's logged start"
+        );
+        assert_eq!(rows[0].summary, "skills=4 updated=none rc=0 dry_run=0");
+        assert_eq!(rows[0].rc, 0);
+        assert_eq!(rows[0].status, crate::types::Status::Quiet);
+        eprintln!(
+            "console e2e: started={} (shell {shell_start}) rc={} duration={}s summary={:?}",
+            rows[0].started_at, rows[0].rc, rows[0].duration_s, rows[0].summary
+        );
+    }
+
+    /// Pins the post-run ingest ORDER: text log first (recover the summary),
+    /// feed second (authoritative metrics). This is reindex's contract; the
+    /// on-demand path must not diverge from it.
+    #[test]
+    fn the_post_run_ingests_the_log_before_the_feed() {
+        let tmp = Tmp::new("post-run-order");
+        let started = 1_700_000_000i64;
+        std::fs::create_dir_all(tmp.0.join("logs")).unwrap();
+        std::fs::write(
+            tmp.0.join("logs/machine-ops.log"),
+            format!(
+                "2026-10-21 05:00:00 [run-job] start job=20-order.sh tier=daily timeout=900s started={started}\n\
+                 2026-10-21 05:00:04 [order] skills=4 rc=0 dry_run=0\n\
+                 2026-10-21 05:00:05 [run-job] finish job=20-order.sh rc=0 timeout=0 tier=daily elapsed=5s\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.0.join("logs/runs.jsonl"),
+            format!(
+                "{{\"job\": \"20-order.sh\", \"started_at\": {started}, \"duration_s\": 42, \"rc\": 1, \"status\": \"fail\", \"dry_run\": false, \"summary\": \"\", \"stdout\": \"\"}}\n"
+            ),
+        )
+        .unwrap();
+
+        let app = tmp.app();
+        record_finished_run(&app.db, &tmp.0);
+
+        let rows = app.db.runs_for("20-order.sh", 10).unwrap();
+        assert_eq!(rows.len(), 1, "same key, so one row");
+        assert_eq!(
+            rows[0].summary, "skills=4 rc=0 dry_run=0",
+            "the text log's summary must fill the feed's blank"
+        );
+        assert_eq!(rows[0].duration_s, 42, "the feed's duration must win");
+        assert_eq!(rows[0].rc, 1, "the feed's rc must win");
+        assert_eq!(rows[0].status, crate::types::Status::Fail);
     }
 }
