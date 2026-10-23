@@ -171,6 +171,61 @@ run_probe "$CAP_PROBE" "$WORK/cap2.out" "$WORK/cap2.err" \
 CAP_SIZE_AFTER="$(wc -c < "$CAP_FILE" | tr -d '[:space:]')"
 (( CAP_SIZE_AFTER == CAP_SIZE_BEFORE )) || fail "log_output kept growing past the cap"
 
+# 2b. A file filled EXACTLY to the cap drops nothing silently: the next call
+#     leaves the marker, and repeated calls do not stack it.
+EXACT_PROBE="$WORK/exact.sh"
+cat > "$EXACT_PROBE" <<'PROBE'
+set -eu
+source "$1/lib/common.sh"
+# 63 y's + log_output's newline == exactly the 64-byte cap.
+exact="$(printf '%63s' '' | tr ' ' 'y')"
+log_output "$exact"
+log_output "later one"
+log_output "later two"
+log_output "later three"
+exit 0
+PROBE
+EXACT_FILE="$WORK/exact.out.log"
+run_probe "$EXACT_PROBE" "$WORK/exact.out" "$WORK/exact.err" \
+    "MOPS_JOB_OUT=$EXACT_FILE" "MOPS_JOB_OUT_CAP=64"
+(( PROBE_RC == 0 )) || fail "log_output aborted its caller at an exactly-full file"
+if [[ -s "$WORK/exact.out" ]]; then
+    fail "log_output wrote to stdout at an exactly-full file"
+fi
+grep -q -E '^\[truncated at 64 bytes\]$' "$EXACT_FILE" \
+    || fail "dropped output at an exactly-full file left no marker"
+EXACT_MARKERS="$(grep -c -F '[truncated at' "$EXACT_FILE" | tr -d '[:space:]')"
+(( EXACT_MARKERS == 1 )) \
+    || fail "the truncation marker stacked ($EXACT_MARKERS occurrences)"
+if grep -q -F 'later' "$EXACT_FILE"; then
+    fail "text was written past the cap"
+fi
+
+# 2c. A leading-zero cap is base 10, not octal: "08" must not raise an
+#     arithmetic error. The probe runs under set -e, so an abort is fatal.
+LEADING_ZERO_PROBE="$WORK/leading-zero.sh"
+cat > "$LEADING_ZERO_PROBE" <<'PROBE'
+set -eu
+source "$1/lib/common.sh"
+log_output "something"
+exit 0
+PROBE
+LEADING_ZERO_FILE="$WORK/leading-zero.out.log"
+run_probe "$LEADING_ZERO_PROBE" "$WORK/leading-zero.out" "$WORK/leading-zero.err" \
+    "MOPS_JOB_OUT=$LEADING_ZERO_FILE" "MOPS_JOB_OUT_CAP=08"
+(( PROBE_RC == 0 )) || {
+    cat "$WORK/leading-zero.err" >&2
+    fail "MOPS_JOB_OUT_CAP=08 aborted the caller (exit $PROBE_RC)"
+}
+if [[ -s "$WORK/leading-zero.out" ]]; then
+    fail "MOPS_JOB_OUT_CAP=08 wrote to stdout"
+fi
+grep -q -F '[truncated at 8 bytes]' "$LEADING_ZERO_FILE" \
+    || fail "MOPS_JOB_OUT_CAP=08 was not treated as an 8-byte cap"
+if grep -q -F 'something' "$LEADING_ZERO_FILE"; then
+    fail "MOPS_JOB_OUT_CAP=08 did not cap the payload"
+fi
+
 # ---------------------------------------------------------------------------
 # 3. bin/run-job truncates at run start and derives the path from the
 #    filename (trailing .sh stripped).

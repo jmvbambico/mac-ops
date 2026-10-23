@@ -150,6 +150,16 @@ mops_job_out_path() {
 # calls log_output, the FILE never grows past it.
 MOPS_JOB_OUT_CAP="${MOPS_JOB_OUT_CAP:-262144}"
 
+# _mops_job_out_marked <file> — true when the file already ends with our
+# truncation marker. Matched by SHAPE, not the exact cap-bearing text: a file
+# capped at one value may later be read with a different MOPS_JOB_OUT_CAP and
+# must still count as marked.
+_mops_job_out_marked() {
+    local last marker_re='^\[truncated at [0-9]+ bytes\]$'
+    last="$(tail -n 1 "$1" 2>/dev/null || true)"
+    [[ "$last" =~ $marker_re ]]
+}
+
 # log_output <text> — append text to the per-job output log.
 #
 # bin/run-job exports MOPS_JOB_OUT (logs/job-<slug>.out.log) and truncates it
@@ -166,6 +176,10 @@ log_output() {
     [[ -n "${MOPS_JOB_OUT:-}" ]] || return 0
     local cap="${MOPS_JOB_OUT_CAP:-262144}"
     [[ "$cap" =~ ^[0-9]+$ ]] || cap=262144
+    # Force base 10 before any arithmetic: a leading-zero value such as "08"
+    # is octal to (( )), which errors on the digit 8 and would break the
+    # never-fail contract (and abort a job running under set -e).
+    cap=$((10#$cap))
     (( cap > 0 )) || return 0
 
     local text text_bytes cur room marker budget
@@ -182,7 +196,16 @@ log_output() {
 
     cur="$(wc -c < "$MOPS_JOB_OUT" 2>/dev/null | tr -d '[:space:]' || true)"
     [[ "$cur" =~ ^[0-9]+$ ]] || cur=0
-    (( cur < cap )) || return 0
+
+    if (( cur >= cap )); then
+        # Already full: this call's text cannot fit, so say so instead of
+        # dropping it silently. Exactly once — later calls see the marker.
+        if ! _mops_job_out_marked "$MOPS_JOB_OUT"; then
+            printf '%s' $'\n'"[truncated at ${cap} bytes]"$'\n' \
+                >> "$MOPS_JOB_OUT" 2>/dev/null || true
+        fi
+        return 0
+    fi
 
     room=$(( cap - cur ))
     text_bytes="$(printf '%s' "$text" | wc -c | tr -d '[:space:]' || true)"
