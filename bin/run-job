@@ -169,7 +169,10 @@ job_still_ours() {
 }
 
 run_started_epoch="$(date +%s)"
-log_line "[run-job] start job=$job_name tier=${job_tier:-unknown} timeout=${job_timeout}s"
+# `started=` carries the real epoch the console's parser keys on. It is the
+# same shape bin/run logs, so one parser rule covers both writers; the line's
+# own timestamp is only when it was written.
+log_line "[run-job] start job=$job_name tier=${job_tier:-unknown} timeout=${job_timeout}s started=$run_started_epoch"
 
 # stdin from /dev/null: jobs must never block on a prompt, whether run by
 # launchd or by a human. Each job runs in its own process group so a timeout

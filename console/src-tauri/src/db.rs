@@ -698,6 +698,22 @@ fn parse_log(text: &str, out: &mut Vec<NewRun>) {
                     if file.is_empty() {
                         continue;
                     }
+                    if let Some(start) = tail
+                        .strip_prefix("started=")
+                        .and_then(|v| v.split_whitespace().next())
+                        .and_then(|v| v.parse::<i64>().ok())
+                    {
+                        // The dispatcher logged the job's REAL start epoch.
+                        // Prefer it over the cursor: the cursor is the
+                        // previous job's completion, which is a second off
+                        // when the hand-off crosses a boundary. The cursor
+                        // path below stays as the fallback for historical
+                        // logs that predate this line (and for a run whose
+                        // writer never logged one).
+                        let rec = pending.entry(file.to_string()).or_default();
+                        rec.started_at = Some(start);
+                        continue;
+                    }
                     if let Some(rc) = tail.strip_prefix("rc=").and_then(|v| v.trim().parse().ok()) {
                         // Job completion: closes its slice of the window.
                         let rec = pending.entry(file.to_string()).or_default();
@@ -737,8 +753,17 @@ fn parse_log(text: &str, out: &mut Vec<NewRun>) {
                             out.push(r);
                         }
                     }
+                    // Prefer the explicit start epoch (the same `started=`
+                    // shape bin/run logs); fall back to the line timestamp
+                    // only for logs written before it existed.
+                    let started = l
+                        .msg
+                        .split_whitespace()
+                        .find_map(|t| t.strip_prefix("started="))
+                        .and_then(|v| v.parse::<i64>().ok())
+                        .unwrap_or(l.ts);
                     let rec = pending.entry(file).or_default();
-                    rec.started_at = Some(l.ts);
+                    rec.started_at = Some(started);
                     rec.end = l.ts;
                 } else if l.msg.starts_with("finish ") {
                     let mut rec = pending.remove(&file).unwrap_or_default();
@@ -1036,6 +1061,207 @@ this line is not a log line at all
         let n = db.ingest_log(&log).unwrap();
         assert_eq!(n, 7);
         assert_eq!(db.runs_for("20-mole-clean.sh", 10).unwrap().len(), 2);
+    }
+
+    /// Regression for the duplicate-run / blank-summary defect. The
+    /// dispatcher passes the job's true start epoch to the feed and now logs
+    /// it too; the parser must prefer that epoch over the cursor (the
+    /// previous job's completion), which is off by a second whenever the
+    /// hand-off crosses a boundary and made the two writers key different
+    /// rows. Derived from the completion line so it is timezone-independent.
+    #[test]
+    fn a_logged_dispatcher_start_beats_the_cursor_guess() {
+        const JOB: &str = "40-skills-update.sh";
+        let t = Tmp::new("start-line");
+        let log = t.path("machine-ops.log");
+        // Previous job completed at 02:03:07. This job really started one
+        // second later (02:03:08) and completed at 02:03:21.
+        let completion = "2026-10-21 02:03:21 [run] job 40-skills-update.sh rc=0";
+        let end = parse_line(completion).unwrap().ts;
+        let started = end - 13;
+        std::fs::write(
+            &log,
+            format!(
+                "2026-10-21 02:03:07 [run] start tier=daily dry_run=0\n\
+                 2026-10-21 02:03:07 [brew-update] upgraded=9 held=0 rc=0 dry_run=0\n\
+                 2026-10-21 02:03:07 [run] job 30-brew-update.sh rc=0\n\
+                 2026-10-21 02:03:08 [run] job 40-skills-update.sh started={started}\n\
+                 2026-10-21 02:03:20 [skills-update] skills=9 updated=none rc=0 dry_run=0\n\
+                 {completion}\n\
+                 2026-10-21 02:03:21 [run] finish tier=daily jobs=2 speaking=0\n"
+            ),
+        )
+        .unwrap();
+        let db = t.db();
+        db.ingest_log(&log).unwrap();
+
+        let runs = db.runs_for(JOB, 10).unwrap();
+        assert_eq!(runs.len(), 1, "the start line must not add a second record");
+        let run = &runs[0];
+        assert_eq!(run.started_at, started, "the logged start must beat the cursor");
+        assert_eq!(
+            run.duration_s,
+            end - started,
+            "the window must run from the true start, not the previous completion"
+        );
+        assert_eq!(run.summary, "skills=9 updated=none rc=0 dry_run=0");
+    }
+
+    /// Historical logs predate the start line. They must keep parsing exactly
+    /// as before: with no logged start, the cursor (the previous completion)
+    /// is still the fallback. `ingest_log_is_idempotent_and_skips_malformed`
+    /// also runs SAMPLE_LOG, which has no start lines, unchanged.
+    #[test]
+    fn a_log_without_start_lines_keeps_the_cursor_fallback() {
+        let t = Tmp::new("no-start-line");
+        let log = t.path("machine-ops.log");
+        std::fs::write(&log, SAMPLE_LOG).unwrap();
+        let db = t.db();
+        db.ingest_log(&log).unwrap();
+
+        let fallback = parse_line("2026-10-20 02:00:24 [run] job 10-mole-optimize.sh rc=0")
+            .unwrap()
+            .ts;
+        let clean = db.last_run("20-mole-clean.sh").unwrap().unwrap();
+        assert_eq!(
+            clean.started_at, fallback,
+            "with no start line the previous completion is still the start"
+        );
+        assert_eq!(clean.duration_s, 92, "02:00:24 -> 02:01:56");
+    }
+
+    /// With the start line, the feed record and the text-log record for one
+    /// run share a key, so the upsert produces ONE row: the parser's summary
+    /// fills the feed's blank, and the feed keeps rc/status/duration.
+    #[test]
+    fn a_dispatcher_start_line_keys_the_feed_and_the_log_to_one_row() {
+        const JOB: &str = "40-skills-update.sh";
+        let t = Tmp::new("start-line-feed");
+        let log = t.path("machine-ops.log");
+        let feed = t.path("runs.jsonl");
+        let completion = "2026-10-21 02:03:21 [run] job 40-skills-update.sh rc=0";
+        let end = parse_line(completion).unwrap().ts;
+        let started = end - 13;
+        std::fs::write(
+            &log,
+            format!(
+                "2026-10-21 02:03:07 [run] start tier=daily dry_run=0\n\
+                 2026-10-21 02:03:07 [brew-update] upgraded=9 held=0 rc=0 dry_run=0\n\
+                 2026-10-21 02:03:07 [run] job 30-brew-update.sh rc=0\n\
+                 2026-10-21 02:03:08 [run] job 40-skills-update.sh started={started}\n\
+                 2026-10-21 02:03:20 [skills-update] skills=9 updated=none rc=0 dry_run=0\n\
+                 {completion}\n\
+                 2026-10-21 02:03:21 [run] finish tier=daily jobs=2 speaking=0\n"
+            ),
+        )
+        .unwrap();
+        // The feed's record for the same run: quiet, so summary/stdout empty.
+        std::fs::write(
+            &feed,
+            format!(
+                "{{\"job\": \"{JOB}\", \"started_at\": {started}, \"duration_s\": 12, \"rc\": 0, \"status\": \"quiet\", \"dry_run\": false, \"summary\": \"\", \"stdout\": \"\"}}\n"
+            ),
+        )
+        .unwrap();
+
+        let db = t.db();
+        db.ingest_log(&log).unwrap();
+        db.ingest_runs_jsonl(&feed).unwrap();
+
+        let rows = db.runs_for(JOB, 10).unwrap();
+        assert_eq!(rows.len(), 1, "feed and log must share the logged-start key");
+        let row = &rows[0];
+        assert_eq!(row.started_at, started);
+        assert_eq!(
+            row.summary, "skills=9 updated=none rc=0 dry_run=0",
+            "the log's summary must fill the feed's blank"
+        );
+        assert_eq!(row.duration_s, 12, "the feed stays authoritative for duration");
+        assert_eq!(row.rc, 0);
+        assert_eq!(row.status, Status::Quiet);
+    }
+
+    /// End-to-end: a real bin/run sweep, then the production ingest order
+    /// (text log, then feed). The logged start key lands both writers on one
+    /// row per job, with the quiet run's summary recovered rather than blank.
+    #[test]
+    fn a_real_sweep_indexes_one_row_per_job() {
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("repo root");
+        let t = Tmp::new("e2e-sweep");
+        let root = t.path("root");
+        let home = t.path("home");
+        std::fs::create_dir_all(root.join("jobs")).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        for (file, label, summary) in [
+            ("10-alpha.sh", "alpha", "updated=1"),
+            ("20-beta.sh", "beta", "skills=2 updated=none"),
+        ] {
+            std::fs::write(
+                root.join("jobs").join(file),
+                format!(
+                    "#!/usr/bin/env bash\n# tier: daily\n\
+                     source \"$MOPS_TOOL_ROOT/lib/common.sh\"\n\
+                     sleep 1\n\
+                     log_line \"[{label}] {summary} rc=0 dry_run=0\"\n\
+                     exit 0\n"
+                ),
+            )
+            .unwrap();
+        }
+
+        let out = std::process::Command::new("/bin/bash")
+            .arg(repo.join("bin/run"))
+            .arg("daily")
+            .arg("--dry-run")
+            .env("MOPS_TOOL_ROOT", repo)
+            .env("MOPS_AUTOMATIONS_ROOT", &root)
+            .env("HOME", &home)
+            .env("MOPS_DRY_RUN", "1")
+            // Never let an inherited feed/log override point at the real root.
+            .env_remove("MOPS_RUNS")
+            .env_remove("MOPS_LOG")
+            .output()
+            .expect("run bin/run");
+        assert!(
+            out.status.success(),
+            "bin/run exited {:?}\nstderr:\n{}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            out.stdout.is_empty(),
+            "a nominal sweep must print nothing (Principle I), got:\n{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+
+        let log = root.join("logs/machine-ops.log");
+        let feed = root.join("logs/runs.jsonl");
+        let db = t.db();
+        db.ingest_log(&log).unwrap();
+        db.ingest_runs_jsonl(&feed).unwrap();
+
+        for (file, detail) in [("10-alpha.sh", "updated=1"), ("20-beta.sh", "skills=2")] {
+            let hist = db.runs_for(file, 10).unwrap();
+            assert_eq!(
+                hist.len(),
+                1,
+                "{file} must have exactly one row after both ingests, got {}",
+                hist.len()
+            );
+            assert!(!hist[0].summary.is_empty(), "{file} summary must not be blank");
+            assert!(
+                hist[0].summary.contains(detail),
+                "{file} summary did not come from its log line: {:?}",
+                hist[0].summary
+            );
+            eprintln!(
+                "e2e {file}: started={} duration={}s summary={:?}",
+                hist[0].started_at, hist[0].duration_s, hist[0].summary
+            );
+        }
     }
 
     /// One line per run, in the exact shape `record_run` in lib/common.sh
