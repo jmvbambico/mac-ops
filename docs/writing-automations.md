@@ -85,6 +85,15 @@ THRESHOLD_GB=15
 
 FREE_GB="$(df -g / | awk 'NR==2 {print $4}')"
 
+# Validate before comparing. An unparsed value is a measurement FAILURE, and
+# must not be allowed to look like a healthy reading — see the note below.
+if [[ ! "$FREE_GB" =~ ^[0-9]+$ ]]; then
+    alert "[$LABEL] cannot read free space from df"
+    log_line "[$LABEL] df parse failed rc=1 dry_run=$DRY"
+    flush_alerts "$LABEL"
+    exit 1
+fi
+
 if (( FREE_GB < THRESHOLD_GB )); then
     alert "[$LABEL] free space ${FREE_GB}G is below ${THRESHOLD_GB}G"
 fi
@@ -95,7 +104,20 @@ flush_alerts "$LABEL"
 exit 0
 ```
 
-Three details that are easy to get wrong:
+Four details that are easy to get wrong:
+
+**Validate anything you parsed before you compare it.** This one bites hard,
+because `set -u` does not catch it. If `df` or `awk` yields nothing, `FREE_GB`
+is *set* — just empty — and bash arithmetic reads an empty string as `0`:
+
+```bash
+FREE_GB=""
+(( FREE_GB < 15 )) && echo "fires"   # prints "fires"
+```
+
+So a broken measurement silently becomes "disk critically full" and alerts
+every single night. A watchdog that cries wolf when its own sensor breaks is
+worse than one that is simply absent. Check the shape, then decide.
 
 **`set -u`, not `set -e`.** A watchdog that aborts halfway through leaves you
 with no summary and no alert. Handle failures explicitly instead.
@@ -134,8 +156,24 @@ Appends one timestamped line to `logs/machine-ops.log`. **Never touches
 stdout.** Log one of these on *every* run, healthy or not — it is what the
 console shows as the run's summary, and what a rebuild recovers from.
 
-Write them as `key=value` pairs. They are read by humans scanning a log and by
-the console's parser.
+Write them as `key=value` pairs, and **end the summary line with
+`rc=<n> dry_run=<0|1>`**. That is not a style preference — it is how the
+parser recognises a summary at all:
+
+- A `log_line` counts as the run's summary only when its **last token** is
+  `dry_run=<int>`. `rc=<int>` must appear too (the last one wins).
+- Lines that do not end that way are kept as log detail and **ignored** for the
+  summary. That is deliberate: it is what stops a note like
+  `cleanup failed rc=1 (log-only, not an alert)` from being mistaken for the
+  run's outcome.
+- Among qualifying lines, the last one wins — so extra `log_line` calls for
+  detail are fine, and the shipped examples use them freely.
+
+```bash
+log_line "[$LABEL] certs=12 expiring=0 rc=0 dry_run=$DRY"   # summary ✓
+log_line "[$LABEL] output tail: $(printf '%s' "$OUT" | tail -n 5 | tr '\n' ';')"
+                                                            # detail, ignored ✓
+```
 
 ### 3. `log_output` — the full captured output
 
@@ -339,7 +377,12 @@ Exported by `bin/run` / `bin/run-job`; read them, do not set them:
 | `MOPS_LOG` | The shared run log. `log_line` writes here. |
 | `MOPS_JOB_OUT` | This job's output file. `log_output` writes here. |
 | `MOPS_JOB_OUT_CAP` | Byte cap for that file (default 262144). |
-| `MOPS_VENV_DIR` | Override the venv location for a Python automation. |
+
+Not exported by the runner — set it yourself if you want it:
+
+| Variable | Meaning |
+|---|---|
+| `MOPS_VENV_DIR` | Read by the **generated Python wrapper** to override where its virtualenv lives. Defaults to `~/.cache/machine-ops/venvs/<label>`. Nothing sets this for you. |
 
 ### Helpers in `lib/common.sh`
 
@@ -363,7 +406,7 @@ your job.
 - [ ] Line 2 is `# tier: <name>`, line 3 is `# timeout: <secs>` if you need one
 - [ ] `set -u`, and `lib/common.sh` sourced via `MOPS_TOOL_ROOT`
 - [ ] A healthy run prints **zero bytes** to stdout
-- [ ] Exactly one `log_line` summary per run, as `key=value` pairs
+- [ ] At least one `log_line` summary per run, as `key=value` pairs
 - [ ] `log_output` for any command output worth keeping
 - [ ] `flush_alerts "$LABEL"` at the end
 - [ ] `MOPS_DRY_RUN` honoured on every mutating path
